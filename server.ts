@@ -5,17 +5,12 @@
 
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import jwt from 'jsonwebtoken';
 import { DatabaseManager, getTodayString, DbUser } from './server/db.js';
 import { Vehicle, Driver, Hospital, Schedule, HistoryLog, UserProfile, RequestMedicalType } from './src/types.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-tfd-super-secret-key-12345';
-
-// Derive __dirname in ES Modules context
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
 
