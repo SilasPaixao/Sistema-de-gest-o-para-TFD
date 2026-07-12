@@ -268,7 +268,7 @@ export default function App() {
 
       {/* Humble governmental layout footer */}
       <footer className="bg-white border-t border-slate-150 py-6 text-center text-xs text-slate-400 font-medium">
-        <p>© 2026 Secretaria Municipal de Transportes e Saúde. Todos os direitos reservados.</p>
+        <p>© 2026 Secretaria Municipal de Saúde. Todos os direitos reservados.</p>
         <p className="mt-1 text-[10px] text-slate-300 font-mono">TFD-v1.0.0-PROD</p>
       </footer>
 
