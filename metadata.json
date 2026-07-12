@@ -2,5 +2,5 @@
   "name": "Gestão de Viagens TFD",
   "description": "Sistema de Gestão de Agendamento de Viagens para Tratamento Fora de Domicílio (TFD)",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_API"]
 }
