@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Database, FolderOpen, Save, RefreshCw, AlertCircle, CheckCircle2, ShieldAlert, History } from 'lucide-react';
+import { Database, Save, RefreshCw, AlertCircle, CheckCircle2, ShieldAlert } from 'lucide-react';
 import { User as UserType } from '../types.js';
 
 interface BackupSectionProps {
@@ -23,15 +23,9 @@ export default function BackupSection({ currentUser, backupDoneToday, onBackupEx
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [backupLoading, setBackupLoading] = useState(false);
-  const [saveLoading, setSaveLoading] = useState(false);
-  
-  // Settings Form
-  const [folder, setFolder] = useState('backups');
   
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-
-  const isAdmin = currentUser.profile === 'Administrador';
 
   const fetchBackupStatus = async () => {
     try {
@@ -45,7 +39,6 @@ export default function BackupSection({ currentUser, backupDoneToday, onBackupEx
       }
       const data = await response.json();
       setStatus(data);
-      setFolder(data.backupFolder || 'backups');
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -75,45 +68,28 @@ export default function BackupSection({ currentUser, backupDoneToday, onBackupEx
         throw new Error(data.error || 'Erro ao processar as rotinas de backup');
       }
 
-      setSuccess(`Backup executado com sucesso! Arquivo gerado: ${data.file}`);
+      setSuccess(`Backup executado com sucesso! O arquivo foi gerado e o download iniciará automaticamente.`);
+      
+      // Auto download to user's machine
+      if (data.data) {
+        const jsonStr = JSON.stringify(data.data, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = data.file || `backup-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
       onBackupExecuted(); // Refresh parent status (will hide banner)
       fetchBackupStatus();
     } catch (err: any) {
       setError(err.message);
     } finally {
       setBackupLoading(false);
-    }
-  };
-
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isAdmin) return;
-
-    setSaveLoading(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      const response = await fetch('/api/backup/settings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-user-id': currentUser.token || currentUser.id
-        },
-        body: JSON.stringify({ backupFolder: folder })
-      });
-      
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Erro ao salvar configurações de backup');
-      }
-
-      setSuccess('Diretório de salvamento de backups atualizado com sucesso!');
-      fetchBackupStatus();
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSaveLoading(false);
     }
   };
 
@@ -133,7 +109,7 @@ export default function BackupSection({ currentUser, backupDoneToday, onBackupEx
           Utilitários de Backup do Banco de Dados
         </h2>
         <p className="text-sm text-slate-500">
-          Configure a pasta de salvamento local e execute backups manuais das tabelas do sistema.
+          Execute backups manuais das tabelas do sistema. Os dados salvos são transferidos para a sua máquina.
         </p>
       </div>
 
@@ -151,9 +127,9 @@ export default function BackupSection({ currentUser, backupDoneToday, onBackupEx
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <div className="max-w-2xl mx-auto">
         
-        {/* Left: Execute actions */}
+        {/* Execute actions */}
         <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-6">
           <div className="flex items-center space-x-3">
             <div className={`p-2 rounded-xl flex items-center justify-center ${backupDoneToday ? 'bg-blue-50 text-blue-600' : 'bg-amber-100 text-amber-600'}`}>
@@ -161,7 +137,7 @@ export default function BackupSection({ currentUser, backupDoneToday, onBackupEx
             </div>
             <div>
               <h3 className="font-bold text-slate-900 text-base">Backup Manual Diário</h3>
-              <p className="text-xs text-slate-500">Garanta a integridade operacional e exporte os dados.</p>
+              <p className="text-xs text-slate-500">Garanta a integridade operacional e exporte os dados diretamente para o seu computador.</p>
             </div>
           </div>
 
@@ -176,13 +152,9 @@ export default function BackupSection({ currentUser, backupDoneToday, onBackupEx
                 {backupDoneToday ? 'REALIZADO HOJE' : 'PENDENTE DE EXECUÇÃO'}
               </span>
             </p>
-            <p className="flex justify-between border-b border-slate-200/50 pb-2.5">
+            <p className="flex justify-between pb-1">
               <span>Último backup em:</span>
               <strong className="text-slate-900">{status?.lastBackupDate ? status?.lastBackupDate.split('-').reverse().join('/') : 'Nunca realizado'}</strong>
-            </p>
-            <p className="flex justify-between pb-1">
-              <span>Pasta de Destino Definida:</span>
-              <strong className="text-slate-900 font-mono">/{status?.backupFolder || 'backups'}</strong>
             </p>
           </div>
 
@@ -199,54 +171,6 @@ export default function BackupSection({ currentUser, backupDoneToday, onBackupEx
             )}
             Executar Backup Agora
           </button>
-        </div>
-
-        {/* Right Settings panel (Administrators only can edit, ordinary coordinate can only view) */}
-        <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm flex flex-col justify-between">
-          <div className="space-y-4">
-            <h3 className="font-bold text-slate-900 text-base flex items-center">
-              <FolderOpen className="h-5 w-5 text-blue-600 mr-2 animate-none" />
-              Diretório de Salvamento
-            </h3>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Defina o caminho de pasta do servidor onde serão compactados e arquivados os dumps diários em formato <code>.json</code>.
-            </p>
-
-            <form onSubmit={handleSaveSettings} className="space-y-4 pt-2">
-              <div>
-                <label htmlFor="settings-folder" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Caminho do Diretório (Pasta Local)
-                </label>
-                <input
-                  id="settings-folder"
-                  type="text"
-                  required
-                  disabled={!isAdmin}
-                  value={folder}
-                  onChange={(e) => setFolder(e.target.value)}
-                  placeholder="Ex: backups/diarios"
-                  className="block w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-950 font-mono placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs disabled:opacity-60"
-                />
-              </div>
-
-              {isAdmin ? (
-                <button
-                  id="save-backup-settings-btn"
-                  type="submit"
-                  disabled={saveLoading}
-                  className="w-full flex items-center justify-center py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition-colors pointer-elements-auto disabled:opacity-50"
-                >
-                  {saveLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <Save className="h-3.5 w-3.5 mr-1" />}
-                  Atualizar Pasta de Backups
-                </button>
-              ) : (
-                <p className="text-[10px] text-amber-600 font-bold bg-amber-50 rounded-lg p-2.5 flex items-start">
-                  <AlertCircle className="h-4 w-4 text-amber-500 mr-1.5 shrink-0" />
-                  Visualização Somente. Apenas administradores do sistema podem mudar a pasta física de backups do servidor.
-                </p>
-              )}
-            </form>
-          </div>
         </div>
 
       </div>

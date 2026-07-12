@@ -4,8 +4,9 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { User, Phone, CheckCircle2, AlertCircle, Users } from 'lucide-react';
+import { User, Phone, CheckCircle2, AlertCircle, Users, Trash2 } from 'lucide-react';
 import { Driver, UserProfile } from '../types.js';
+import ConfirmDialog from './ConfirmDialog.js';
 
 interface DriversSectionProps {
   currentUserId: string;
@@ -17,6 +18,18 @@ export default function DriversSection({ currentUserId, userProfile }: DriversSe
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [confirmConfig, setConfirmConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    type?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   // Form State
   const [fullName, setFullName] = useState('');
@@ -41,6 +54,34 @@ export default function DriversSection({ currentUserId, userProfile }: DriversSe
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDelete = async (id: string) => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Excluir Motorista',
+      message: 'Tem certeza absoluta que deseja EXCLUIR permanentemente este motorista?',
+      type: 'danger',
+      onConfirm: async () => {
+        setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+        setError(null);
+        setSuccess(null);
+        try {
+          const response = await fetch(`/api/drivers/${id}`, {
+            method: 'DELETE',
+            headers: { 'x-user-id': currentUserId }
+          });
+          if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Falha ao excluir motorista');
+          }
+          setSuccess('Motorista excluído com sucesso!');
+          fetchDrivers();
+        } catch (e: any) {
+          setError(e.message);
+        }
+      }
+    });
   };
 
   useEffect(() => {
@@ -207,6 +248,15 @@ export default function DriversSection({ currentUserId, userProfile }: DriversSe
                       <span>{d.contact}</span>
                     </div>
                   </div>
+                  {userProfile === 'Administrador' && (
+                    <button
+                      onClick={() => handleDelete(d.id)}
+                      className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors inline-flex items-center"
+                      title="Excluir Motorista"
+                    >
+                      <Trash2 className="h-4.5 w-4.5" />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -214,6 +264,14 @@ export default function DriversSection({ currentUserId, userProfile }: DriversSe
         </div>
 
       </div>
+      <ConfirmDialog
+        isOpen={confirmConfig.isOpen}
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        type={confirmConfig.type}
+        onConfirm={confirmConfig.onConfirm}
+        onCancel={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

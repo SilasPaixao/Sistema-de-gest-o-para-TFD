@@ -4,8 +4,9 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Landmark, MapPin, Phone, Plus, Minus, ArrowUpRight, Upload, HelpCircle, AlertCircle, CheckCircle2, Search } from 'lucide-react';
+import { Landmark, MapPin, Phone, Plus, Minus, ArrowUpRight, Upload, HelpCircle, AlertCircle, CheckCircle2, Search, Trash2 } from 'lucide-react';
 import { Hospital, UserProfile } from '../types.js';
+import ConfirmDialog from './ConfirmDialog.js';
 
 interface HospitalsSectionProps {
   currentUserId: string;
@@ -17,6 +18,18 @@ export default function HospitalsSection({ currentUserId, userProfile }: Hospita
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [confirmConfig, setConfirmConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    type?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   // Form State
   const [name, setName] = useState('');
@@ -46,6 +59,35 @@ export default function HospitalsSection({ currentUserId, userProfile }: Hospita
       setLoading(false);
     }
   };
+
+  const handleDelete = async (id: string) => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Excluir Hospital',
+      message: 'Tem certeza absoluta que deseja EXCLUIR permanentemente este hospital?',
+      type: 'danger',
+      onConfirm: async () => {
+        setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+        setError(null);
+        setSuccess(null);
+        try {
+          const response = await fetch(`/api/hospitals/${id}`, {
+            method: 'DELETE',
+            headers: { 'x-user-id': currentUserId }
+          });
+          if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Falha ao excluir hospital');
+          }
+          setSuccess('Hospital excluído com sucesso!');
+          fetchHospitals();
+        } catch (e: any) {
+          setError(e.message);
+        }
+      }
+    });
+  };
+
 
   useEffect(() => {
     fetchHospitals();
@@ -397,17 +439,28 @@ export default function HospitalsSection({ currentUserId, userProfile }: Hospita
                       </div>
                     </div>
 
-                    {h.googleMapsUrl && (
-                      <a
-                        href={h.googleMapsUrl}
-                        target="_blank"
-                        referrerPolicy="no-referrer"
-                        className="inline-flex items-center text-xs text-blue-600 hover:text-blue-700 font-semibold bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100 transition-colors shrink-0"
-                      >
-                        Ver no Google Maps
-                        <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
-                      </a>
-                    )}
+                    <div className="flex items-center space-x-2 shrink-0">
+                      {h.googleMapsUrl && (
+                        <a
+                          href={h.googleMapsUrl}
+                          target="_blank"
+                          referrerPolicy="no-referrer"
+                          className="inline-flex items-center text-xs text-blue-600 hover:text-blue-700 font-semibold bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100 transition-colors"
+                        >
+                          Ver no Google Maps
+                          <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
+                        </a>
+                      )}
+                      {userProfile === 'Administrador' && (
+                        <button
+                          onClick={() => handleDelete(h.id)}
+                          className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors inline-flex items-center border border-red-100 bg-red-50/10"
+                          title="Excluir Hospital"
+                        >
+                          <Trash2 className="h-4.5 w-4.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Contacts line badges style */}
@@ -431,6 +484,14 @@ export default function HospitalsSection({ currentUserId, userProfile }: Hospita
         </div>
 
       </div>
+      <ConfirmDialog
+        isOpen={confirmConfig.isOpen}
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        type={confirmConfig.type}
+        onConfirm={confirmConfig.onConfirm}
+        onCancel={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

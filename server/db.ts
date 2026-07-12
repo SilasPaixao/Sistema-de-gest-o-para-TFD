@@ -102,7 +102,16 @@ function getS3Client(): S3Client | null {
   const accessKeyId = process.env.S3_ACCESS_KEY_ID;
   const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
   const region = process.env.S3_REGION || 'us-east-1';
-  const endpoint = process.env.S3_ENDPOINT;
+  let endpoint = process.env.S3_ENDPOINT;
+
+  // If placeholders from .env.example are present, ignore them
+  if (
+    bucket === 'your_bucket_name' ||
+    accessKeyId === 'your_access_key_id' ||
+    secretAccessKey === 'your_secret_access_key'
+  ) {
+    return null;
+  }
 
   if (bucket && accessKeyId && secretAccessKey) {
     const s3Config: any = {
@@ -113,12 +122,29 @@ function getS3Client(): S3Client | null {
       region,
     };
     if (endpoint) {
-      s3Config.endpoint = endpoint;
-      s3Config.forcePathStyle = true;
+      endpoint = endpoint.trim();
+      if (endpoint) {
+        // Ensure endpoint starts with http:// or https://
+        if (!/^https?:\/\//i.test(endpoint)) {
+          endpoint = `https://${endpoint}`;
+        }
+        try {
+          new URL(endpoint); // Validate the URL format
+          s3Config.endpoint = endpoint;
+          s3Config.forcePathStyle = true;
+        } catch (e) {
+          logger(`Invalid S3_ENDPOINT URL format: "${endpoint}". Skipping S3 custom endpoint.`);
+        }
+      }
     }
-    s3Client = new S3Client(s3Config);
-    logger(`S3 Client initialized. Bucket: ${bucket}, Region: ${region}, Endpoint: ${endpoint || 'AWS Standard'}`);
-    return s3Client;
+    try {
+      s3Client = new S3Client(s3Config);
+      logger(`S3 Client initialized. Bucket: ${bucket}, Region: ${region}, Endpoint: ${s3Config.endpoint || 'AWS Standard'}`);
+      return s3Client;
+    } catch (err: any) {
+      logger(`Failed to initialize S3 Client: ${err.message}`);
+      return null;
+    }
   }
   return null;
 }
@@ -178,13 +204,38 @@ export class DatabaseManager {
                 start_date VARCHAR(50) NOT NULL,
                 end_date VARCHAR(50) NOT NULL,
                 vehicle_id VARCHAR(255) NOT NULL,
+                return_vehicle_id VARCHAR(255),
+                driver_id VARCHAR(255),
+                return_driver_id VARCHAR(255),
                 hospital_id VARCHAR(255) NOT NULL,
                 request_type VARCHAR(255) NOT NULL,
                 recurrent_type_details TEXT,
                 created_by_user_id VARCHAR(255) NOT NULL,
                 created_by_user_name VARCHAR(255) NOT NULL,
-                created_at VARCHAR(255) NOT NULL
+                created_at VARCHAR(255) NOT NULL,
+                companion_name VARCHAR(255),
+                companion_phone_1 VARCHAR(50),
+                companion_phone_2 VARCHAR(50),
+                confirmation_status VARCHAR(50) DEFAULT 'pendente',
+                confirmation_updated_by VARCHAR(255),
+                confirmation_updated_at VARCHAR(255)
               );
+            `);
+            await dbPool.query(`
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS is_deletion_pending BOOLEAN DEFAULT FALSE;
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS deletion_requested_at VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS deletion_requested_by_user_id VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS deletion_requested_by_user_name VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS deleted_by_admin_name VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS companion_name VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS companion_phone_1 VARCHAR(50);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS companion_phone_2 VARCHAR(50);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS confirmation_status VARCHAR(50) DEFAULT 'pendente';
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS confirmation_updated_by VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS confirmation_updated_at VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS return_vehicle_id VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS driver_id VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS return_driver_id VARCHAR(255);
             `);
             await dbPool.query(`
               CREATE TABLE IF NOT EXISTS tfd_history_logs (
@@ -268,20 +319,29 @@ export class DatabaseManager {
               }
               for (const s of dbState.schedules) {
                 await dbPool.query(
-                  `INSERT INTO tfd_schedules (id, patient_name, start_date, end_date, vehicle_id, hospital_id, request_type, recurrent_type_details, created_by_user_id, created_by_user_name, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT DO NOTHING`,
+                  `INSERT INTO tfd_schedules (id, patient_name, start_date, end_date, vehicle_id, return_vehicle_id, driver_id, return_driver_id, hospital_id, request_type, recurrent_type_details, created_by_user_id, created_by_user_name, created_at, companion_name, companion_phone_1, companion_phone_2, confirmation_status, confirmation_updated_by, confirmation_updated_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT DO NOTHING`,
                   [
                     s.id,
                     s.patientName,
                     s.startDate,
                     s.endDate,
                     s.vehicleId,
+                    s.returnVehicleId || null,
+                    s.driverId || null,
+                    s.returnDriverId || null,
                     s.hospitalId,
                     s.requestType,
                     s.recurrentTypeDetails || null,
                     s.createdByUserId,
                     s.createdByUserName,
-                    s.createdAt
+                    s.createdAt,
+                    s.companionName || null,
+                    s.companionPhone1 || null,
+                    s.companionPhone2 || null,
+                    s.confirmationStatus || 'pendente',
+                    s.confirmationUpdatedBy || null,
+                    s.confirmationUpdatedAt || null
                   ]
                 );
               }
@@ -370,12 +430,26 @@ export class DatabaseManager {
                 startDate: r.start_date,
                 endDate: r.end_date,
                 vehicleId: r.vehicle_id,
+                returnVehicleId: r.return_vehicle_id || undefined,
+                driverId: r.driver_id || undefined,
+                returnDriverId: r.return_driver_id || undefined,
                 hospitalId: r.hospital_id,
                 requestType: r.request_type,
                 recurrentTypeDetails: r.recurrent_type_details || undefined,
                 createdByUserId: r.created_by_user_id,
                 createdByUserName: r.created_by_user_name,
-                createdAt: r.created_at
+                createdAt: r.created_at,
+                companionName: r.companion_name || undefined,
+                companionPhone1: r.companion_phone_1 || undefined,
+                companionPhone2: r.companion_phone_2 || undefined,
+                isDeletionPending: r.is_deletion_pending === true,
+                deletionRequestedAt: r.deletion_requested_at || undefined,
+                deletionRequestedByUserId: r.deletion_requested_by_user_id || undefined,
+                deletionRequestedByUserName: r.deletion_requested_by_user_name || undefined,
+                deletedByAdminName: r.deleted_by_admin_name || undefined,
+                confirmationStatus: r.confirmation_status || 'pendente',
+                confirmationUpdatedBy: r.confirmation_updated_by || undefined,
+                confirmationUpdatedAt: r.confirmation_updated_at || undefined
               }));
 
               // Load history logs
@@ -637,34 +711,64 @@ export class DatabaseManager {
     } else {
       dbState.schedules.push(schedule);
     }
-
-    if (pool) {
+     if (pool) {
       pool.query(
-        `INSERT INTO tfd_schedules (id, patient_name, start_date, end_date, vehicle_id, hospital_id, request_type, recurrent_type_details, created_by_user_id, created_by_user_name, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `INSERT INTO tfd_schedules (
+          id, patient_name, start_date, end_date, vehicle_id, return_vehicle_id, driver_id, return_driver_id, hospital_id, request_type, recurrent_type_details, 
+          created_by_user_id, created_by_user_name, created_at, 
+          is_deletion_pending, deletion_requested_at, deletion_requested_by_user_id, deletion_requested_by_user_name, deleted_by_admin_name,
+          companion_name, companion_phone_1, companion_phone_2,
+          confirmation_status, confirmation_updated_by, confirmation_updated_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
          ON CONFLICT (id) DO UPDATE SET
            patient_name = EXCLUDED.patient_name,
            start_date = EXCLUDED.start_date,
            end_date = EXCLUDED.end_date,
            vehicle_id = EXCLUDED.vehicle_id,
+           return_vehicle_id = EXCLUDED.return_vehicle_id,
+           driver_id = EXCLUDED.driver_id,
+           return_driver_id = EXCLUDED.return_driver_id,
            hospital_id = EXCLUDED.hospital_id,
            request_type = EXCLUDED.request_type,
            recurrent_type_details = EXCLUDED.recurrent_type_details,
            created_by_user_id = EXCLUDED.created_by_user_id,
            created_by_user_name = EXCLUDED.created_by_user_name,
-           created_at = EXCLUDED.created_at`,
+           created_at = EXCLUDED.created_at,
+           is_deletion_pending = EXCLUDED.is_deletion_pending,
+           deletion_requested_at = EXCLUDED.deletion_requested_at,
+           deletion_requested_by_user_id = EXCLUDED.deletion_requested_by_user_id,
+           deletion_requested_by_user_name = EXCLUDED.deletion_requested_by_user_name,
+           deleted_by_admin_name = EXCLUDED.deleted_by_admin_name,
+           companion_name = EXCLUDED.companion_name,
+           companion_phone_1 = EXCLUDED.companion_phone_1, confirmation_status = EXCLUDED.confirmation_status, confirmation_updated_by = EXCLUDED.confirmation_updated_by, confirmation_updated_at = EXCLUDED.confirmation_updated_at,
+           companion_phone_2 = EXCLUDED.companion_phone_2`,
         [
           schedule.id,
           schedule.patientName,
           schedule.startDate,
           schedule.endDate,
           schedule.vehicleId,
+          schedule.returnVehicleId || null,
+          schedule.driverId || null,
+          schedule.returnDriverId || null,
           schedule.hospitalId,
           schedule.requestType,
           schedule.recurrentTypeDetails || null,
           schedule.createdByUserId,
           schedule.createdByUserName,
-          schedule.createdAt
+          schedule.createdAt,
+          schedule.isDeletionPending || false,
+          schedule.deletionRequestedAt || null,
+          schedule.deletionRequestedByUserId || null,
+          schedule.deletionRequestedByUserName || null,
+          schedule.deletedByAdminName || null,
+          schedule.companionName || null,
+          schedule.companionPhone1 || null,
+          schedule.companionPhone2 || null,
+          schedule.confirmationStatus || 'pendente',
+          schedule.confirmationUpdatedBy || null,
+          schedule.confirmationUpdatedAt || null
         ]
       ).catch(e => console.error('PostgreSQL saveSchedule failed:', e));
     } else {
@@ -678,6 +782,46 @@ export class DatabaseManager {
     if (pool) {
       pool.query('DELETE FROM tfd_schedules WHERE id = $1', [id])
         .catch(e => console.error('PostgreSQL deleteSchedule failed:', e));
+    } else {
+      this.syncToFile();
+    }
+  }
+
+  public static deleteVehicle(id: string): void {
+    dbState.vehicles = dbState.vehicles.filter((v: Vehicle) => v.id !== id);
+    if (pool) {
+      pool.query('DELETE FROM tfd_vehicles WHERE id = $1', [id])
+        .catch(e => console.error('PostgreSQL deleteVehicle failed:', e));
+    } else {
+      this.syncToFile();
+    }
+  }
+
+  public static deleteDriver(id: string): void {
+    dbState.drivers = dbState.drivers.filter((d: Driver) => d.id !== id);
+    if (pool) {
+      pool.query('DELETE FROM tfd_drivers WHERE id = $1', [id])
+        .catch(e => console.error('PostgreSQL deleteDriver failed:', e));
+    } else {
+      this.syncToFile();
+    }
+  }
+
+  public static deleteHospital(id: string): void {
+    dbState.hospitals = dbState.hospitals.filter((h: Hospital) => h.id !== id);
+    if (pool) {
+      pool.query('DELETE FROM tfd_hospitals WHERE id = $1', [id])
+        .catch(e => console.error('PostgreSQL deleteHospital failed:', e));
+    } else {
+      this.syncToFile();
+    }
+  }
+
+  public static deleteUser(id: string): void {
+    dbState.users = dbState.users.filter((u: DbUser) => u.id !== id);
+    if (pool) {
+      pool.query('DELETE FROM tfd_users WHERE id = $1', [id])
+        .catch(e => console.error('PostgreSQL deleteUser failed:', e));
     } else {
       this.syncToFile();
     }
@@ -796,6 +940,10 @@ export class DatabaseManager {
         error: e.message
       };
     }
+  }
+
+  public static getRawState(): any {
+    return dbState;
   }
 }
 

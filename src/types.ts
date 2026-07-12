@@ -43,18 +43,34 @@ export interface Hospital {
 
 export type RequestMedicalType = 'Consulta/Exame' | 'Cirurgia' | 'Procedimento especializado recorrente';
 
+export type ConfirmationStatus = 'pendente' | 'confirmado' | 'sem_contato' | 'desistencia';
+
 export interface Schedule {
   id: string;
   patientName: string;
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD
   vehicleId: string;
+  returnVehicleId?: string;
+  driverId?: string;
+  returnDriverId?: string;
   hospitalId: string;
   requestType: RequestMedicalType;
   recurrentTypeDetails?: string; // Quimioterapia, Hemodiálise, Radioterapia, Outros
   createdByUserId: string;
   createdByUserName: string;
   createdAt: string;
+  companionName?: string;
+  companionPhone1?: string;
+  companionPhone2?: string;
+  isDeletionPending?: boolean;
+  deletionRequestedAt?: string;
+  deletionRequestedByUserId?: string;
+  deletionRequestedByUserName?: string;
+  deletedByAdminName?: string;
+  confirmationStatus?: ConfirmationStatus;
+  confirmationUpdatedBy?: string;
+  confirmationUpdatedAt?: string;
 }
 
 export interface HistoryLog {

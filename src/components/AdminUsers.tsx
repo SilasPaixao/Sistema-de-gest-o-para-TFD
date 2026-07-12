@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { Check, X, Users, MessageSquareCode, Clock, ShieldCheck, ShieldAlert, UserCheck, Trash2 } from 'lucide-react';
 import { User as UserType } from '../types.js';
+import ConfirmDialog from './ConfirmDialog.js';
 
 interface AdminUsersProps {
   currentUserId: string;
@@ -16,6 +17,18 @@ export default function AdminUsers({ currentUserId }: AdminUsersProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [confirmConfig, setConfirmConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    type?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   const fetchUsers = async () => {
     try {
@@ -66,25 +79,63 @@ export default function AdminUsers({ currentUserId }: AdminUsersProps) {
   };
 
   const handleReject = async (id: string) => {
-    if (!confirm('Tem certeza que deseja REJEITAR esta solicitação de usuário?')) return;
-    try {
-      setActionLoading(id);
-      const response = await fetch(`/api/users/${id}/reject`, {
-        method: 'POST',
-        headers: {
-          'x-user-id': currentUserId
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Rejeitar Usuário',
+      message: 'Tem certeza que deseja REJEITAR esta solicitação de usuário?',
+      type: 'warning',
+      onConfirm: async () => {
+        setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+        try {
+          setActionLoading(id);
+          const response = await fetch(`/api/users/${id}/reject`, {
+            method: 'POST',
+            headers: {
+              'x-user-id': currentUserId
+            }
+          });
+          if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Falha ao rejeitar usuário');
+          }
+          await fetchUsers();
+        } catch (err: any) {
+          alert(err.message);
+        } finally {
+          setActionLoading(null);
         }
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Falha ao rejeitar usuário');
       }
-      await fetchUsers();
-    } catch (err: any) {
-      alert(err.message);
-    } finally {
-      setActionLoading(null);
-    }
+    });
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Excluir Usuário',
+      message: 'Tem certeza absoluta que deseja EXCLUIR permanentemente este usuário cadastrado?',
+      type: 'danger',
+      onConfirm: async () => {
+        setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+        try {
+          setActionLoading(id);
+          const response = await fetch(`/api/users/${id}`, {
+            method: 'DELETE',
+            headers: {
+              'x-user-id': currentUserId
+            }
+          });
+          if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Falha ao excluir usuário');
+          }
+          await fetchUsers();
+        } catch (err: any) {
+          alert(err.message);
+        } finally {
+          setActionLoading(null);
+        }
+      }
+    });
   };
 
   const pendentes = users.filter(u => u.status === 'pendente');
@@ -207,6 +258,7 @@ export default function AdminUsers({ currentUserId }: AdminUsersProps) {
                   <th className="px-6 py-3">Perfil</th>
                   <th className="px-6 py-3">Status</th>
                   <th className="px-6 py-3 text-right">Cadastrado em</th>
+                  <th className="px-6 py-3 text-right">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
@@ -234,12 +286,32 @@ export default function AdminUsers({ currentUserId }: AdminUsersProps) {
                     <td className="px-6 py-4 text-right text-slate-500">
                       {new Date(u.createdAt).toLocaleDateString('pt-BR')}
                     </td>
+                    <td className="px-6 py-4 text-right">
+                      {u.username !== 'admin' && u.id !== currentUserId && (
+                        <button
+                          onClick={() => handleDeleteUser(u.id)}
+                          disabled={actionLoading !== null}
+                          className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors inline-flex items-center"
+                          title="Excluir Usuário"
+                        >
+                          <Trash2 className="h-4.5 w-4.5" />
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        <ConfirmDialog
+          isOpen={confirmConfig.isOpen}
+          title={confirmConfig.title}
+          message={confirmConfig.message}
+          type={confirmConfig.type}
+          onConfirm={confirmConfig.onConfirm}
+          onCancel={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}
+        />
       </div>
     </div>
   );

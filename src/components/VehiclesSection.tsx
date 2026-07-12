@@ -4,8 +4,9 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Car, Fuel, Tag, Settings2, Users2, AlertCircle, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Car, Fuel, Tag, Settings2, Users2, AlertCircle, Sparkles, CheckCircle2, Trash2 } from 'lucide-react';
 import { Vehicle, VehicleType, UserProfile } from '../types.js';
+import ConfirmDialog from './ConfirmDialog.js';
 
 interface VehiclesSectionProps {
   currentUserId: string;
@@ -17,6 +18,18 @@ export default function VehiclesSection({ currentUserId, userProfile }: Vehicles
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [confirmConfig, setConfirmConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    type?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   // Form State
   const [type, setType] = useState<VehicleType>('Carro de pequeno porte');
@@ -105,6 +118,34 @@ export default function VehiclesSection({ currentUserId, userProfile }: Vehicles
     if (newType === 'Carro de pequeno porte') setMaxPassengers(4);
     else if (newType === 'Carro de grande porte') setMaxPassengers(15);
     else if (newType === 'Ambulância') setMaxPassengers(2);
+  };
+
+  const handleDelete = async (id: string) => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Excluir Veículo',
+      message: 'Tem certeza absoluta que deseja EXCLUIR permanentemente este veículo da frota?',
+      type: 'danger',
+      onConfirm: async () => {
+        setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+        setError(null);
+        setSuccess(null);
+        try {
+          const response = await fetch(`/api/vehicles/${id}`, {
+            method: 'DELETE',
+            headers: { 'x-user-id': currentUserId }
+          });
+          if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Falha ao excluir veículo');
+          }
+          setSuccess('Veículo excluído com sucesso!');
+          fetchVehicles();
+        } catch (e: any) {
+          setError(e.message);
+        }
+      }
+    });
   };
 
   return (
@@ -281,9 +322,20 @@ export default function VehiclesSection({ currentUserId, userProfile }: Vehicles
                       </div>
                       
                       {/* Stylized license plate */}
-                      <span className="font-mono text-xs font-extrabold tracking-widest bg-slate-100 px-2.5 py-1 rounded border border-slate-300 text-slate-800 shadow-sm select-all">
-                        {v.plate}
-                      </span>
+                      <div className="flex flex-col items-end space-y-2">
+                        <span className="font-mono text-xs font-extrabold tracking-widest bg-slate-100 px-2.5 py-1 rounded border border-slate-300 text-slate-800 shadow-sm select-all">
+                          {v.plate}
+                        </span>
+                        {userProfile === 'Administrador' && (
+                          <button
+                            onClick={() => handleDelete(v.id)}
+                            className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors inline-flex items-center"
+                            title="Excluir Veículo"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex items-center text-slate-600 text-xs gap-3 font-medium bg-slate-50 p-2.5 rounded-xl border border-slate-100">
@@ -298,6 +350,14 @@ export default function VehiclesSection({ currentUserId, userProfile }: Vehicles
         </div>
 
       </div>
+      <ConfirmDialog
+        isOpen={confirmConfig.isOpen}
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        type={confirmConfig.type}
+        onConfirm={confirmConfig.onConfirm}
+        onCancel={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

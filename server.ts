@@ -364,7 +364,6 @@ async function startServer() {
 
     // Fill with overlapping schedules
     for (const s of schedules) {
-      if (s.vehicleId !== vehicleId) continue;
       if (excludeScheduleId && s.id === excludeScheduleId) continue;
 
       const sStart = new Date(s.startDate);
@@ -374,7 +373,12 @@ async function startServer() {
       for (const dateYMD in occupancy) {
         const dObj = new Date(dateYMD);
         if (dObj >= sStart && dObj <= sEnd) {
-          occupancy[dateYMD] += 1;
+          const isReturnDate = dateYMD === s.endDate;
+          const assignedVehicleId = isReturnDate ? (s.returnVehicleId || s.vehicleId) : s.vehicleId;
+          
+          if (assignedVehicleId === vehicleId) {
+            occupancy[dateYMD] += 1;
+          }
         }
       }
     }
@@ -424,11 +428,56 @@ async function startServer() {
     });
   });
 
+  const checkPendingDeletions = () => {
+    const schedules = DatabaseManager.getSchedules();
+    const now = new Date().getTime();
+    const oneDayMs = 24 * 60 * 60 * 1000;
+
+    for (const sched of [...schedules]) {
+      if (sched.isDeletionPending && sched.deletionRequestedAt) {
+        const requestedTime = new Date(sched.deletionRequestedAt).getTime();
+        if (now - requestedTime >= oneDayMs) {
+          const adminName = sched.deletedByAdminName || sched.deletionRequestedByUserName || 'Administrador';
+          
+          const vehicles = DatabaseManager.getVehicles();
+          const hospitals = DatabaseManager.getHospitals();
+          const vehicleObj = vehicles.find(v => v.id === sched.vehicleId);
+          const hospitalObj = hospitals.find(h => h.id === sched.hospitalId);
+
+          const vehicleDetails = vehicleObj ? `${vehicleObj.model} (${vehicleObj.plate})` : 'Veículo Desconhecido';
+          const hospitalName = hospitalObj ? hospitalObj.name : 'Hospital Desconhecido';
+
+          const historyItem: HistoryLog = {
+            id: 'history-del-' + Math.random().toString(36).substr(2, 9),
+            patientName: sched.patientName,
+            startDate: sched.startDate,
+            endDate: sched.endDate,
+            vehicleDetails,
+            hospitalName,
+            requestType: sched.recurrentTypeDetails ? `${sched.requestType} (${sched.recurrentTypeDetails}) (EXCLUÍDO)` : `${sched.requestType} (EXCLUÍDO)`,
+            createdByUserName: sched.createdByUserName,
+            completedAt: new Date().toISOString(),
+            completedByUserName: `Excluído por Administrador: ${adminName}`
+          };
+
+          DatabaseManager.saveHistory(historyItem);
+          DatabaseManager.deleteSchedule(sched.id);
+        }
+      }
+    }
+  };
+
+  // Run pending deletions check
+  checkPendingDeletions();
+  // Check every minute in background
+  setInterval(checkPendingDeletions, 60000);
+
   // Get active occupancy statistics for overlapping dates
   app.get('/api/schedules', (req, res) => {
     const user = getRequestUser(req);
     if (!user) return res.status(401).json({ error: 'Não autorizado' });
 
+    checkPendingDeletions();
     res.json(DatabaseManager.getSchedules());
   });
 
@@ -443,7 +492,7 @@ async function startServer() {
     const user = getRequestUser(req);
     if (!user) return res.status(401).json({ error: 'Não autorizado' });
 
-    const { patientName, startDate, endDate, vehicleId, hospitalId, requestType, recurrentTypeDetails } = req.body;
+    const { patientName, startDate, endDate, vehicleId, returnVehicleId, driverId, returnDriverId, hospitalId, requestType, recurrentTypeDetails, companionName, companionPhone1, companionPhone2 } = req.body;
     
     if (!patientName || !startDate || !endDate || !vehicleId || !hospitalId || !requestType) {
       return res.status(400).json({ error: 'Todos os campos obrigatórios devem ser preenchidos' });
@@ -452,7 +501,13 @@ async function startServer() {
     const vehicles = DatabaseManager.getVehicles();
     const vehicle = vehicles.find(v => v.id === vehicleId);
     if (!vehicle) {
-      return res.status(404).json({ error: 'Veículo não encontrado' });
+      return res.status(404).json({ error: 'Veículo de ida não encontrado' });
+    }
+
+    const finalReturnVehicleId = returnVehicleId || vehicleId;
+    const returnVehicle = vehicles.find(v => v.id === finalReturnVehicleId);
+    if (!returnVehicle) {
+      return res.status(404).json({ error: 'Veículo de volta não encontrado' });
     }
 
     // Validate dates range validity
@@ -460,23 +515,36 @@ async function startServer() {
       return res.status(400).json({ error: 'A data de ida não pode ser posterior à data de volta' });
     }
 
-    // Calculate occupancy map
-    const occupancy = getOccupancyOnDates(vehicleId, startDate, endDate);
-    
-    // Check if on any date the capacity would be exceeded
-    const fullDateRange: string[] = [];
-    for (const dStr in occupancy) {
-      const booked = occupancy[dStr];
+    // Check outbound vehicle occupancy (on its active days)
+    const outboundOccupancy = getOccupancyOnDates(vehicleId, startDate, endDate);
+    const outboundFullDates: string[] = [];
+    for (const dStr in outboundOccupancy) {
+      // If return vehicle is different, we don't occupy outbound vehicle on return date
+      if (finalReturnVehicleId !== vehicleId && dStr === endDate) continue;
+      
+      const booked = outboundOccupancy[dStr];
       if (booked >= vehicle.maxPassengers) {
-        fullDateRange.push(dStr);
+        outboundFullDates.push(dStr);
       }
     }
 
-    if (fullDateRange.length > 0) {
+    if (outboundFullDates.length > 0) {
       return res.status(400).json({ 
-        error: `O veículo ${vehicle.model} já está lotado em algumas das datas selecionadas!`,
-        datesFull: fullDateRange
+        error: `O veículo de ida (${vehicle.model}) já está lotado em algumas das datas selecionadas!`,
+        datesFull: outboundFullDates
       });
+    }
+
+    // Check return vehicle occupancy (on the return date, if different)
+    if (finalReturnVehicleId !== vehicleId) {
+      const returnOccupancy = getOccupancyOnDates(finalReturnVehicleId, endDate, endDate);
+      const bookedReturn = returnOccupancy[endDate] || 0;
+      if (bookedReturn >= returnVehicle.maxPassengers) {
+        return res.status(400).json({
+          error: `O veículo de volta (${returnVehicle.model}) já está lotado na data de volta (${endDate.split('-').reverse().join('/')})!`,
+          datesFull: [endDate]
+        });
+      }
     }
 
     const newSchedule: Schedule = {
@@ -485,12 +553,18 @@ async function startServer() {
       startDate,
       endDate,
       vehicleId,
+      returnVehicleId: finalReturnVehicleId !== vehicleId ? finalReturnVehicleId : undefined,
+      driverId: driverId || undefined,
+      returnDriverId: returnDriverId || undefined,
       hospitalId,
       requestType: requestType as RequestMedicalType,
       recurrentTypeDetails: requestType === 'Procedimento especializado recorrente' ? recurrentTypeDetails : undefined,
       createdByUserId: user.id,
       createdByUserName: user.name,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      companionName: companionName || undefined,
+      companionPhone1: companionPhone1 || undefined,
+      companionPhone2: companionPhone2 || undefined
     };
 
     DatabaseManager.saveSchedule(newSchedule);
@@ -509,14 +583,11 @@ async function startServer() {
       return res.status(440).json({ error: 'Agendamento não encontrado' });
     }
 
-    // Permissões:
-    // "Apenas o usuário que criou o agendamento poderá editá-lo."
-    // "Administradores também poderão editar qualquer agendamento."
     if (existingSched.createdByUserId !== user.id && user.profile !== 'Administrador') {
       return res.status(403).json({ error: 'Permissão negada. Apenas quem criou este agendamento ou um Administrador pode alterá-lo.' });
     }
 
-    const { patientName, startDate, endDate, vehicleId, hospitalId, requestType, recurrentTypeDetails } = req.body;
+    const { patientName, startDate, endDate, vehicleId, returnVehicleId, driverId, returnDriverId, hospitalId, requestType, recurrentTypeDetails, companionName, companionPhone1, companionPhone2 } = req.body;
     
     if (!patientName || !startDate || !endDate || !vehicleId || !hospitalId || !requestType) {
       return res.status(400).json({ error: 'Todos os campos obrigatórios devem ser preenchidos' });
@@ -525,25 +596,43 @@ async function startServer() {
     const vehicles = DatabaseManager.getVehicles();
     const vehicle = vehicles.find(v => v.id === vehicleId);
     if (!vehicle) {
-      return res.status(404).json({ error: 'Veículo não cadastrado' });
+      return res.status(404).json({ error: 'Veículo de ida não cadastrado' });
     }
 
-    // Check occupancy, exclude this scheduling's current seat allocation in the checks
-    const occupancy = getOccupancyOnDates(vehicleId, startDate, endDate, schedId);
-    
-    // Check if on any date the capacity was exceeded
-    const fullDateRange: string[] = [];
-    for (const dStr in occupancy) {
-      if (occupancy[dStr] >= vehicle.maxPassengers) {
-        fullDateRange.push(dStr);
+    const finalReturnVehicleId = returnVehicleId || vehicleId;
+    const returnVehicle = vehicles.find(v => v.id === finalReturnVehicleId);
+    if (!returnVehicle) {
+      return res.status(404).json({ error: 'Veículo de volta não cadastrado' });
+    }
+
+    // Check outbound vehicle occupancy, exclude this scheduling
+    const outboundOccupancy = getOccupancyOnDates(vehicleId, startDate, endDate, schedId);
+    const outboundFullDates: string[] = [];
+    for (const dStr in outboundOccupancy) {
+      if (finalReturnVehicleId !== vehicleId && dStr === endDate) continue;
+      
+      if (outboundOccupancy[dStr] >= vehicle.maxPassengers) {
+        outboundFullDates.push(dStr);
       }
     }
 
-    if (fullDateRange.length > 0) {
+    if (outboundFullDates.length > 0) {
       return res.status(400).json({ 
-        error: `O veículo ${vehicle.model} já está lotado em algumas das datas especificadas!`,
-        datesFull: fullDateRange
+        error: `O veículo de ida (${vehicle.model}) já está lotado em algumas das datas especificadas!`,
+        datesFull: outboundFullDates
       });
+    }
+
+    // Check return vehicle occupancy, exclude this scheduling
+    if (finalReturnVehicleId !== vehicleId) {
+      const returnOccupancy = getOccupancyOnDates(finalReturnVehicleId, endDate, endDate, schedId);
+      const bookedReturn = returnOccupancy[endDate] || 0;
+      if (bookedReturn >= returnVehicle.maxPassengers) {
+        return res.status(400).json({
+          error: `O veículo de volta (${returnVehicle.model}) já está lotado na data de volta (${endDate.split('-').reverse().join('/')})!`,
+          datesFull: [endDate]
+        });
+      }
     }
 
     // Update fields
@@ -551,9 +640,15 @@ async function startServer() {
     existingSched.startDate = startDate;
     existingSched.endDate = endDate;
     existingSched.vehicleId = vehicleId;
+    existingSched.returnVehicleId = finalReturnVehicleId !== vehicleId ? finalReturnVehicleId : undefined;
+    existingSched.driverId = driverId || undefined;
+    existingSched.returnDriverId = returnDriverId || undefined;
     existingSched.hospitalId = hospitalId;
     existingSched.requestType = requestType as RequestMedicalType;
     existingSched.recurrentTypeDetails = requestType === 'Procedimento especializado recorrente' ? recurrentTypeDetails : undefined;
+    existingSched.companionName = companionName || undefined;
+    existingSched.companionPhone1 = companionPhone1 || undefined;
+    existingSched.companionPhone2 = companionPhone2 || undefined;
     
     DatabaseManager.saveSchedule(existingSched);
     res.json(existingSched);
@@ -615,6 +710,210 @@ async function startServer() {
     res.json({ message: 'Baixa da viagem realizada com sucesso! Registro armazenado no histórico.', history: historyItem });
   });
 
+  // DELETIONS FOR ALL ENTITY TYPES (ADMIN ONLY)
+
+  // 1. Delete User (Apenas administradores)
+  app.delete('/api/users/:id', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user || user.profile !== 'Administrador') {
+      return res.status(403).json({ error: 'Apenas administradores podem excluir usuários cadastrados.' });
+    }
+
+    const targetId = req.params.id;
+    const users = DatabaseManager.getUsers();
+    const targetUser = users.find(u => u.id === targetId);
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Usuário não encontrado.' });
+    }
+
+    if (targetUser.username === 'admin' || targetUser.id === user.id) {
+      return res.status(400).json({ error: 'Não é possível excluir o administrador principal ou a sua própria conta.' });
+    }
+
+    DatabaseManager.deleteUser(targetId);
+    res.json({ message: 'Usuário excluído com sucesso.' });
+  });
+
+  // 2. Delete Vehicle (Apenas administradores)
+  app.delete('/api/vehicles/:id', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user || user.profile !== 'Administrador') {
+      return res.status(403).json({ error: 'Apenas administradores podem excluir veículos.' });
+    }
+
+    const targetId = req.params.id;
+    const vehicles = DatabaseManager.getVehicles();
+    const targetVehicle = vehicles.find(v => v.id === targetId);
+
+    if (!targetVehicle) {
+      return res.status(404).json({ error: 'Veículo não encontrado.' });
+    }
+
+    DatabaseManager.deleteVehicle(targetId);
+    res.json({ message: 'Veículo excluído com sucesso.' });
+  });
+
+  // 3. Delete Driver (Apenas administradores)
+  app.delete('/api/drivers/:id', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user || user.profile !== 'Administrador') {
+      return res.status(403).json({ error: 'Apenas administradores podem excluir motoristas.' });
+    }
+
+    const targetId = req.params.id;
+    const drivers = DatabaseManager.getDrivers();
+    const targetDriver = drivers.find(d => d.id === targetId);
+
+    if (!targetDriver) {
+      return res.status(404).json({ error: 'Motorista não encontrado.' });
+    }
+
+    DatabaseManager.deleteDriver(targetId);
+    res.json({ message: 'Motorista excluído com sucesso.' });
+  });
+
+  // 4. Delete Hospital (Apenas administradores)
+  app.delete('/api/hospitals/:id', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user || user.profile !== 'Administrador') {
+      return res.status(403).json({ error: 'Apenas administradores podem excluir hospitais.' });
+    }
+
+    const targetId = req.params.id;
+    const hospitals = DatabaseManager.getHospitals();
+    const targetHospital = hospitals.find(h => h.id === targetId);
+
+    if (!targetHospital) {
+      return res.status(404).json({ error: 'Hospital não encontrado.' });
+    }
+
+    DatabaseManager.deleteHospital(targetId);
+    res.json({ message: 'Hospital excluído com sucesso.' });
+  });
+
+  // 5. Delete Schedule (Apenas administradores)
+  app.delete('/api/schedules/:id', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user || user.profile !== 'Administrador') {
+      return res.status(403).json({ error: 'Apenas administradores podem excluir agendamentos.' });
+    }
+
+    const schedId = req.params.id;
+    const schedules = DatabaseManager.getSchedules();
+    const sched = schedules.find(s => s.id === schedId);
+
+    if (!sched) {
+      return res.status(404).json({ error: 'Agendamento não encontrado.' });
+    }
+
+    // Se o admin for o responsável (quem agendou), deleta imediatamente
+    if (sched.createdByUserId === user.id) {
+      const vehicles = DatabaseManager.getVehicles();
+      const hospitals = DatabaseManager.getHospitals();
+      const vehicleObj = vehicles.find(v => v.id === sched.vehicleId);
+      const hospitalObj = hospitals.find(h => h.id === sched.hospitalId);
+
+      const vehicleDetails = vehicleObj ? `${vehicleObj.model} (${vehicleObj.plate})` : 'Veículo Desconhecido';
+      const hospitalName = hospitalObj ? hospitalObj.name : 'Hospital Desconhecido';
+
+      const historyItem: HistoryLog = {
+        id: 'history-del-' + Math.random().toString(36).substr(2, 9),
+        patientName: sched.patientName,
+        startDate: sched.startDate,
+        endDate: sched.endDate,
+        vehicleDetails,
+        hospitalName,
+        requestType: sched.recurrentTypeDetails ? `${sched.requestType} (${sched.recurrentTypeDetails}) (EXCLUÍDO)` : `${sched.requestType} (EXCLUÍDO)`,
+        createdByUserName: sched.createdByUserName,
+        completedAt: new Date().toISOString(),
+        completedByUserName: `Excluído por Administrador: ${user.name}`
+      };
+
+      DatabaseManager.saveHistory(historyItem);
+      DatabaseManager.deleteSchedule(schedId);
+
+      return res.json({ message: 'Agendamento de viagem excluído imediatamente por ser o responsável pelo agendamento.', schedule: sched, deletedImmediately: true });
+    } else {
+      // Se não for o responsável, entra na fila de exclusão de 24 horas
+      sched.isDeletionPending = true;
+      sched.deletionRequestedAt = new Date().toISOString();
+      sched.deletionRequestedByUserId = user.id;
+      sched.deletionRequestedByUserName = user.name;
+      sched.deletedByAdminName = user.name;
+
+      DatabaseManager.saveSchedule(sched);
+
+      return res.json({ 
+        message: 'Exclusão agendada! Por você não ser o responsável original, o agendamento só será realmente excluído após 24 horas. Durante este período, você ou o responsável original podem cancelar a exclusão.', 
+        schedule: sched, 
+        deletedImmediately: false 
+      });
+    }
+  });
+
+  // 6. Cancel Pending Schedule Deletion (Admin ou Responsável)
+  app.post('/api/schedules/:id/cancel-deletion', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user) return res.status(401).json({ error: 'Não autorizado' });
+
+    const schedId = req.params.id;
+    const schedules = DatabaseManager.getSchedules();
+    const sched = schedules.find(s => s.id === schedId);
+
+    if (!sched) {
+      return res.status(404).json({ error: 'Agendamento não encontrado.' });
+    }
+
+    if (!sched.isDeletionPending) {
+      return res.status(400).json({ error: 'Este agendamento não possui exclusão pendente.' });
+    }
+
+    // "nesse intervalo de 24 horas o respectivo admin ou o responsável podem cancelar a exclusão"
+    const isRequestedAdmin = sched.deletionRequestedByUserId === user.id;
+    const isCreator = sched.createdByUserId === user.id;
+
+    if (!isRequestedAdmin && !isCreator && user.profile !== 'Administrador') {
+      return res.status(403).json({ error: 'Apenas o administrador que solicitou a exclusão ou o responsável original pelo agendamento podem cancelar a exclusão.' });
+    }
+
+    sched.isDeletionPending = false;
+    sched.deletionRequestedAt = undefined;
+    sched.deletionRequestedByUserId = undefined;
+    sched.deletionRequestedByUserName = undefined;
+    sched.deletedByAdminName = undefined;
+
+    DatabaseManager.saveSchedule(sched);
+    res.json({ message: 'Exclusão do agendamento cancelada com sucesso.', schedule: sched });
+  });
+
+  // 7. Register/Update Schedule Trip Confirmation
+  app.post('/api/schedules/:id/confirmation', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user) return res.status(401).json({ error: 'Não autorizado' });
+
+    const schedId = req.params.id;
+    const { status } = req.body;
+
+    if (!['pendente', 'confirmado', 'sem_contato', 'desistencia'].includes(status)) {
+      return res.status(400).json({ error: 'Status de confirmação inválido.' });
+    }
+
+    const schedules = DatabaseManager.getSchedules();
+    const sched = schedules.find(s => s.id === schedId);
+
+    if (!sched) {
+      return res.status(404).json({ error: 'Agendamento não encontrado.' });
+    }
+
+    sched.confirmationStatus = status;
+    sched.confirmationUpdatedBy = user.name;
+    sched.confirmationUpdatedAt = new Date().toISOString();
+
+    DatabaseManager.saveSchedule(sched);
+    res.json({ message: 'Confirmação do agendamento registrada com sucesso.', schedule: sched });
+  });
+
   // System Backup Configuration
   app.get('/api/backup/status', (req, res) => {
     const user = getRequestUser(req);
@@ -659,7 +958,11 @@ async function startServer() {
 
     const result = DatabaseManager.executeBackup();
     if (result.success) {
-      res.json({ message: 'Backup manual diário executado com sucesso!', ...result });
+      res.json({ 
+        message: 'Backup manual diário executado com sucesso!', 
+        ...result,
+        data: DatabaseManager.getRawState()
+      });
     } else {
       res.status(500).json({ error: `Falha ao realizar o backup: ${result.error}`, ...result });
     }

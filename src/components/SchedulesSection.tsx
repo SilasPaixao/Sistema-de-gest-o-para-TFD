@@ -4,9 +4,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Calendar, User, Truck, Landmark, ClipboardList, ShieldAlert, BadgeInfo, CheckCircle, FileText, AlertTriangle, Plus, Edit, CornerDownLeft, Eye, ShieldCheck, Clock, AlertCircle, Printer, X, ExternalLink } from 'lucide-react';
-import { Schedule, Vehicle, Hospital, RequestMedicalType, User as UserType, HistoryLog } from '../types.js';
+import { Calendar, User, Truck, Landmark, ClipboardList, ShieldAlert, BadgeInfo, CheckCircle, FileText, AlertTriangle, Plus, Edit, CornerDownLeft, Eye, ShieldCheck, Clock, AlertCircle, Printer, X, ExternalLink, Trash2 } from 'lucide-react';
+import { Schedule, Vehicle, Hospital, RequestMedicalType, User as UserType, HistoryLog, Driver } from '../types.js';
 import { normalizeText } from '../lib/normalize.js';
+import ConfirmDialog from './ConfirmDialog.js';
 
 interface SchedulesSectionProps {
   currentUser: UserType;
@@ -17,6 +18,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
   // Global States
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [history, setHistory] = useState<HistoryLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,10 +30,18 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [vehicleId, setVehicleId] = useState('');
+  const [returnVehicleId, setReturnVehicleId] = useState('');
+  const [driverId, setDriverId] = useState('');
+  const [returnDriverId, setReturnDriverId] = useState('');
+  const [useDifferentReturnVehicle, setUseDifferentReturnVehicle] = useState(false);
+  const [currentCalendarMonth, setCurrentCalendarMonth] = useState(new Date());
   const [hospitalSearch, setHospitalSearch] = useState('');
   const [selectedHospitalId, setSelectedHospitalId] = useState('');
   const [requestType, setRequestType] = useState<RequestMedicalType>('Consulta/Exame');
   const [recurrentTypeDetails, setRecurrentTypeDetails] = useState('Quimioterapia');
+  const [companionName, setCompanionName] = useState('');
+  const [companionPhone1, setCompanionPhone1] = useState('');
+  const [companionPhone2, setCompanionPhone2] = useState('');
 
   // Edit State
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
@@ -45,6 +55,18 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
   // Filter & Search states for the travels table
   const [activeTab, setActiveTab] = useState<'ativos' | 'historico'>('ativos');
   const [showPrintWarning, setShowPrintWarning] = useState(false);
+  const [confirmConfig, setConfirmConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    type?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   const isUserOnly = currentUser.profile === 'Usuário comum';
 
@@ -63,18 +85,20 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
       setError(null);
       // Fetch vehicles, hospitals, active schedules, and history in parallel
       const headers = { 'x-user-id': currentUser.token || currentUser.id };
-      const [resVeh, resHosp, resSched, resHist] = await Promise.all([
+      const [resVeh, resDrivers, resHosp, resSched, resHist] = await Promise.all([
         fetch('/api/vehicles', { headers }),
+        fetch('/api/drivers', { headers }),
         fetch('/api/hospitals', { headers }),
         fetch('/api/schedules', { headers }),
         fetch('/api/schedules/history', { headers })
       ]);
 
-      if (!resVeh.ok || !resHosp.ok || !resSched.ok || !resHist.ok) {
+      if (!resVeh.ok || !resDrivers.ok || !resHosp.ok || !resSched.ok || !resHist.ok) {
         throw new Error('Falha ao obter dados operacionais do servidor.');
       }
 
       setVehicles(await resVeh.json());
+      setDrivers(await resDrivers.json());
       setHospitals(await resHosp.json());
       setSchedules(await resSched.json());
       setHistory(await resHist.json());
@@ -135,16 +159,23 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
     setStartDate('');
     setEndDate('');
     setVehicleId('');
+    setReturnVehicleId('');
+    setDriverId('');
+    setReturnDriverId('');
+    setUseDifferentReturnVehicle(false);
     setHospitalSearch('');
     setSelectedHospitalId('');
     setRequestType('Consulta/Exame');
     setRecurrentTypeDetails('Quimioterapia');
+    setCompanionName('');
+    setCompanionPhone1('');
+    setCompanionPhone2('');
     setEditingScheduleId(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isUserOnly) return;
+    if (isUserOnly && !editingScheduleId) return;
 
     setError(null);
     setSuccess(null);
@@ -160,9 +191,15 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
         startDate,
         endDate,
         vehicleId,
+        returnVehicleId: useDifferentReturnVehicle && returnVehicleId ? returnVehicleId : undefined,
+        driverId: driverId || undefined,
+        returnDriverId: returnDriverId || undefined,
         hospitalId: selectedHospitalId,
         requestType,
-        recurrentTypeDetails: requestType === 'Procedimento especializado recorrente' ? recurrentTypeDetails : undefined
+        recurrentTypeDetails: requestType === 'Procedimento especializado recorrente' ? recurrentTypeDetails : undefined,
+        companionName: companionName.trim() || undefined,
+        companionPhone1: companionPhone1.trim() || undefined,
+        companionPhone2: companionPhone2.trim() || undefined
       };
 
       const url = editingScheduleId ? `/api/schedules/${editingScheduleId}` : '/api/schedules';
@@ -198,12 +235,34 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
     setStartDate(s.startDate);
     setEndDate(s.endDate);
     setVehicleId(s.vehicleId);
+    setDriverId(s.driverId || '');
+    setReturnDriverId(s.returnDriverId || '');
+    if (s.returnVehicleId && s.returnVehicleId !== s.vehicleId) {
+      setReturnVehicleId(s.returnVehicleId);
+      setUseDifferentReturnVehicle(true);
+    } else {
+      setReturnVehicleId('');
+      setUseDifferentReturnVehicle(false);
+    }
     setSelectedHospitalId(s.hospitalId);
     setHospitalSearch(hosp ? hosp.name : '');
     setRequestType(s.requestType);
     if (s.recurrentTypeDetails) {
       setRecurrentTypeDetails(s.recurrentTypeDetails);
     }
+    setCompanionName(s.companionName || '');
+    setCompanionPhone1(s.companionPhone1 || '');
+    setCompanionPhone2(s.companionPhone2 || '');
+
+    // Smooth scroll to the form container
+    setTimeout(() => {
+      const formContainer = document.getElementById('scheduling-form-container');
+      if (formContainer) {
+        formContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }, 100);
   };
 
   // Baixa (Concluir Viagem)
@@ -230,9 +289,127 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
     }
   };
 
+  const handleDeleteSchedule = async (id: string) => {
+    const s = schedules.find(item => item.id === id);
+    if (!s) return;
+
+    let confirmMsg = 'Tem certeza de que deseja EXCLUIR este agendamento de viagem?';
+    if (s.createdByUserId !== currentUser.id) {
+      confirmMsg = `Atenção: Você NÃO é o responsável original por este agendamento.\n\nPor você ser Administrador, o agendamento entrará em uma fila de exclusão pendente por 24 horas. Durante este tempo, você ou o responsável original poderão reverter a exclusão.\n\nDeseja prosseguir e agendar a exclusão?`;
+    }
+
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Excluir Agendamento',
+      message: confirmMsg,
+      type: s.createdByUserId !== currentUser.id ? 'warning' : 'danger',
+      onConfirm: async () => {
+        setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+        setError(null);
+        setSuccess(null);
+        try {
+          const response = await fetch(`/api/schedules/${id}`, {
+            method: 'DELETE',
+            headers: {
+              'x-user-id': currentUser.token || currentUser.id
+            }
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Erro ao excluir agendamento');
+          }
+          setSuccess(data.message || 'Exclusão processada com sucesso!');
+          fetchData();
+        } catch (err: any) {
+          setError(err.message);
+        }
+      }
+    });
+  };
+
+  const handleCancelDeletion = async (id: string) => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Cancelar Exclusão',
+      message: 'Deseja realmente cancelar a exclusão deste agendamento de viagem e mantê-lo ativo?',
+      type: 'info',
+      onConfirm: async () => {
+        setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+        setError(null);
+        setSuccess(null);
+        try {
+          const response = await fetch(`/api/schedules/${id}/cancel-deletion`, {
+            method: 'POST',
+            headers: {
+              'x-user-id': currentUser.token || currentUser.id
+            }
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Erro ao cancelar exclusão');
+          }
+          setSuccess(data.message || 'Exclusão cancelada com sucesso!');
+          fetchData();
+        } catch (err: any) {
+          setError(err.message);
+        }
+      }
+    });
+  };
+
+  const handleUpdateConfirmation = async (id: string, status: string) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      const response = await fetch(`/api/schedules/${id}/confirmation`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': currentUser.token || currentUser.id
+        },
+        body: JSON.stringify({ status })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Erro ao registrar confirmação');
+      }
+      setSuccess(data.message || 'Confirmação registrada com sucesso!');
+      fetchData();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
   const getVehicleName = (vId: string) => {
     const v = vehicles.find(item => item.id === vId);
     return v ? `${v.brand} ${v.model} (${v.plate})` : 'Desconhecido';
+  };
+
+  const getDriverName = (dId: string) => {
+    const d = drivers.find(item => item.id === dId);
+    return d ? d.fullName : 'Não designado';
+  };
+
+  const getVehicleOccupancyOnDate = (vId: string, dateStr: string, excludeScheduleId?: string) => {
+    let count = 0;
+    const dObj = new Date(dateStr);
+    
+    for (const s of schedules) {
+      if (excludeScheduleId && s.id === excludeScheduleId) continue;
+      
+      const sStart = new Date(s.startDate);
+      const sEnd = new Date(s.endDate);
+      
+      if (dObj >= sStart && dObj <= sEnd) {
+        const isReturnDate = dateStr === s.endDate;
+        const assignedVehicleId = isReturnDate ? (s.returnVehicleId || s.vehicleId) : s.vehicleId;
+        
+        if (assignedVehicleId === vId) {
+          count++;
+        }
+      }
+    }
+    return count;
   };
 
   const getHospitalName = (hId: string) => {
@@ -293,9 +470,9 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         
-        {/* Left: Scheduling form or edit form (for Admin / Coordinator) */}
-        {!isUserOnly && (
-          <div className="lg:col-span-1 no-print">
+        {/* Left: Scheduling form or edit form (for Admin / Coordinator / Active Edit) */}
+        {(!isUserOnly || editingScheduleId) && (
+          <div id="scheduling-form-container" className="lg:col-span-1 no-print">
             <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-4">
               <h3 className="font-bold text-slate-900 text-lg">
                 {editingScheduleId ? 'Editar Agendamento' : 'Novo Agendamento'}
@@ -341,56 +518,294 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                   </div>
                 </div>
 
-                {/* Date start */}
-                <div className="grid grid-cols-2 gap-3">
+                {/* Companion details (Optional) */}
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-150 space-y-3">
+                  <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                    Acompanhante & Contatos
+                  </span>
+                  
                   <div>
-                    <label htmlFor="sched-start" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                      Data de Ida
+                    <label htmlFor="sched-companion-name" className="block text-xs font-semibold text-slate-700 mb-1">
+                      Nome do Acompanhante
                     </label>
                     <input
-                      id="sched-start"
-                      type="date"
-                      required
-                      value={startDate}
-                      onChange={(e) => setStartDate(e.target.value)}
-                      className="block w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs"
+                      id="sched-companion-name"
+                      type="text"
+                      placeholder="Nome do acompanhante"
+                      value={companionName}
+                      onChange={(e) => setCompanionName(e.target.value)}
+                      className="block w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-950 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                     />
                   </div>
 
-                  <div>
-                    <label htmlFor="sched-end" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                      Data de Volta
-                    </label>
-                    <input
-                      id="sched-end"
-                      type="date"
-                      required
-                      value={endDate}
-                      onChange={(e) => setEndDate(e.target.value)}
-                      className="block w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs"
-                    />
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label htmlFor="sched-companion-phone-1" className="block text-xs font-semibold text-slate-700 mb-1">
+                        Telefone Contato 1
+                      </label>
+                      <input
+                        id="sched-companion-phone-1"
+                        type="text"
+                        placeholder="Ex: (00) 00000-0000"
+                        value={companionPhone1}
+                        onChange={(e) => setCompanionPhone1(e.target.value)}
+                        className="block w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-950 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="sched-companion-phone-2" className="block text-xs font-semibold text-slate-700 mb-1">
+                        Telefone Contato 2
+                      </label>
+                      <input
+                        id="sched-companion-phone-2"
+                        type="text"
+                        placeholder="Ex: (00) 00000-0000"
+                        value={companionPhone2}
+                        onChange={(e) => setCompanionPhone2(e.target.value)}
+                        className="block w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-950 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs"
+                      />
+                    </div>
                   </div>
                 </div>
 
-                {/* Vehicle Selection dropdown */}
-                <div>
-                  <label htmlFor="sched-vehicle" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                    Veículo de Viagem
-                  </label>
-                  <select
-                    id="sched-vehicle"
-                    required
-                    value={vehicleId}
-                    onChange={(e) => setVehicleId(e.target.value)}
-                    className="block w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs"
-                  >
-                    <option value="">Selecione o veículo...</option>
-                    {vehicles.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.brand} {v.model} ({v.plate}) — Cap: {v.maxPassengers}
-                      </option>
-                    ))}
-                  </select>
+                {/* 1. Vehicle and Driver Selection FIRST */}
+                <div className="space-y-4 border-l-2 border-blue-500 pl-4 py-1">
+                  
+                  {/* Ida Section */}
+                  <div className="space-y-3 bg-slate-50/60 p-4 rounded-2xl border border-slate-150">
+                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block">Ida (Partida)</span>
+                    
+                    {/* Veículo de Ida */}
+                    <div>
+                      <label htmlFor="sched-vehicle" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Veículo de Ida</span>
+                        {vehicleId && startDate && (() => {
+                          const v = vehicles.find(x => x.id === vehicleId);
+                          if (!v) return null;
+                          const count = getVehicleOccupancyOnDate(v.id, startDate, editingScheduleId);
+                          const isFull = count >= v.maxPassengers;
+                          return (
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isFull ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                              Ocupação Ida: {count}/{v.maxPassengers} {isFull ? '(LOTADO)' : '(Vagas disponíveis)'}
+                            </span>
+                          );
+                        })()}
+                      </label>
+                      <select
+                        id="sched-vehicle"
+                        required
+                        value={vehicleId}
+                        onChange={(e) => {
+                          setVehicleId(e.target.value);
+                        }}
+                        className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
+                      >
+                        <option value="">Selecione o veículo para ida...</option>
+                        {vehicles.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.brand} {v.model} ({v.plate}) — Cap: {v.maxPassengers} passageiros
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Motorista de Ida */}
+                    <div>
+                      <label htmlFor="sched-driver" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                        Motorista de Ida
+                      </label>
+                      <select
+                        id="sched-driver"
+                        value={driverId}
+                        onChange={(e) => setDriverId(e.target.value)}
+                        className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
+                      >
+                        <option value="">Selecione o motorista para ida...</option>
+                        {drivers.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.fullName} (CNH: {d.cnhType})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Volta options & Customizers */}
+                  <div className="space-y-3 bg-slate-50/60 p-4 rounded-2xl border border-slate-150">
+                    <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block">Volta (Retorno)</span>
+                    
+                    {/* Use Different Return Vehicle Toggle */}
+                    <div className="flex items-center space-x-2 py-1">
+                      <input
+                        type="checkbox"
+                        id="use-different-return-vehicle"
+                        checked={useDifferentReturnVehicle}
+                        onChange={(e) => {
+                          setUseDifferentReturnVehicle(e.target.checked);
+                          if (!e.target.checked) {
+                            setReturnVehicleId('');
+                          }
+                        }}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                      />
+                      <label htmlFor="use-different-return-vehicle" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
+                        Utilizar veículo diferente na Volta
+                      </label>
+                    </div>
+
+                    {useDifferentReturnVehicle && (
+                      <div>
+                        <label htmlFor="sched-return-vehicle" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
+                          <span>Veículo de Volta</span>
+                          {returnVehicleId && endDate && (() => {
+                            const v = vehicles.find(x => x.id === returnVehicleId);
+                            if (!v) return null;
+                            const count = getVehicleOccupancyOnDate(v.id, endDate, editingScheduleId);
+                            const isFull = count >= v.maxPassengers;
+                            return (
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isFull ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                Ocupação Volta: {count}/{v.maxPassengers} {isFull ? '(LOTADO)' : '(Vagas disponíveis)'}
+                              </span>
+                            );
+                          })()}
+                        </label>
+                        <select
+                          id="sched-return-vehicle"
+                          required={useDifferentReturnVehicle}
+                          value={returnVehicleId}
+                          onChange={(e) => setReturnVehicleId(e.target.value)}
+                          className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
+                        >
+                          <option value="">Selecione o veículo para volta...</option>
+                          {vehicles.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.brand} {v.model} ({v.plate}) — Cap: {v.maxPassengers} passageiros
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Motorista de Volta */}
+                    <div>
+                      <label htmlFor="sched-return-driver" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                        Motorista de Volta
+                      </label>
+                      <select
+                        id="sched-return-driver"
+                        value={returnDriverId}
+                        onChange={(e) => setReturnDriverId(e.target.value)}
+                        className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
+                      >
+                        <option value="">Selecione o motorista para volta...</option>
+                        {drivers.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.fullName} (CNH: {d.cnhType})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Date summary display inputs */}
+                  <div className="grid grid-cols-2 gap-3 bg-blue-50/20 p-4 rounded-2xl border border-blue-100/40">
+                    <div>
+                      <label htmlFor="sched-start" className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Data de Ida
+                      </label>
+                      <input
+                        id="sched-start"
+                        type="date"
+                        required
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                        className="block w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-medium"
+                      />
+                      {startDate && (
+                        <p className="text-[10px] font-bold text-blue-600 mt-1">
+                          Selecionado: {startDate.split('-').reverse().join('/')}
+                        </p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label htmlFor="sched-end" className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Data de Volta
+                      </label>
+                      <input
+                        id="sched-end"
+                        type="date"
+                        required
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                        className="block w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-medium"
+                      />
+                      {endDate && (
+                        <p className="text-[10px] font-bold text-indigo-600 mt-1">
+                          Selecionado: {endDate.split('-').reverse().join('/')}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Calendars displaying dynamically below choices */}
+                  <div className="space-y-4">
+                    {/* Calendar Ida */}
+                    {(() => {
+                      const v = vehicles.find(x => x.id === vehicleId);
+                      if (!v) return (
+                        <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-500">
+                          Selecione um <strong>veículo de ida</strong> acima para exibir o calendário de agendamento de ida.
+                        </div>
+                      );
+                      return (
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block">
+                            Selecione a Data de Ida no Calendário abaixo:
+                          </span>
+                          <VehicleCalendar
+                            vehicle={v}
+                            editingScheduleId={editingScheduleId}
+                            getVehicleOccupancyOnDate={getVehicleOccupancyOnDate}
+                            startDate={startDate}
+                            endDate={endDate}
+                            onSelectDate={(date) => {
+                              setStartDate(date);
+                            }}
+                          />
+                        </div>
+                      );
+                    })()}
+
+                    {/* Calendar Volta */}
+                    {(() => {
+                      const actualReturnVehId = useDifferentReturnVehicle ? returnVehicleId : vehicleId;
+                      const v = vehicles.find(x => x.id === actualReturnVehId);
+                      if (!v) return (
+                        <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-500">
+                          Selecione um <strong>veículo de volta</strong> acima para exibir o calendário de agendamento de volta.
+                        </div>
+                      );
+                      return (
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block">
+                            Selecione a Data de Volta no Calendário abaixo:
+                          </span>
+                          <VehicleCalendar
+                            vehicle={v}
+                            editingScheduleId={editingScheduleId}
+                            getVehicleOccupancyOnDate={getVehicleOccupancyOnDate}
+                            startDate={startDate}
+                            endDate={endDate}
+                            onSelectDate={(date) => {
+                              setEndDate(date);
+                            }}
+                          />
+                        </div>
+                      );
+                    })()}
+                  </div>
+
                 </div>
 
                 {/* Hospital Selection search box */}
@@ -522,7 +937,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
         )}
 
         {/* Right side: Interactive Tab lists (Ativos vs Históricos de Auditorias) */}
-        <div className={isUserOnly ? 'lg:col-span-3' : 'lg:col-span-2'}>
+        <div className={(isUserOnly && !editingScheduleId) ? 'lg:col-span-3' : 'lg:col-span-2'}>
           
           {/* Section tab buttons */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-200 mb-6 font-sans gap-4 no-print">
@@ -613,18 +1028,43 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                 {schedules.map((s) => {
                   const isCreator = s.createdByUserId === currentUser.id;
                   const isAdmin = currentUser.profile === 'Administrador';
-                  const canEdit = isCreator || isAdmin;
+                  const canEdit = (isCreator || isAdmin) && !s.isDeletionPending;
                   const isPastReturn = s.endDate <= todayStr;
 
                   return (
                     <div 
                       key={s.id} 
                       className={`bg-white p-6 rounded-2xl border transition-all duration-200 ${
-                        isPastReturn 
-                          ? 'border-amber-200 shadow-sm shadow-amber-50 bg-amber-50/10' 
-                          : 'border-slate-150 shadow-sm hover:shadow-md'
+                        s.isDeletionPending
+                          ? 'border-red-300 border-dashed bg-red-50/5 shadow-sm'
+                          : isPastReturn 
+                            ? 'border-amber-200 shadow-sm shadow-amber-50 bg-amber-50/10' 
+                            : 'border-slate-150 shadow-sm hover:shadow-md'
                       }`}
                     >
+                      {/* Deletion Pending Banner */}
+                      {s.isDeletionPending && (
+                        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex flex-col sm:flex-row sm:items-center sm:justify-between text-xs text-red-900 gap-3">
+                          <div className="flex items-start space-x-2">
+                            <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+                            <div>
+                              <span className="font-bold block">EXCLUSÃO PROGRAMADA (PENDENTE)</span>
+                              <span>
+                                Solicitada pelo Administrador <strong className="text-red-950">@{s.deletedByAdminName || s.deletionRequestedByUserName}</strong> em {s.deletionRequestedAt ? new Date(s.deletionRequestedAt).toLocaleString('pt-BR') : ''}. O agendamento será excluído permanentemente após 24 horas da solicitação.
+                              </span>
+                            </div>
+                          </div>
+                          {(currentUser.profile === 'Administrador' || s.createdByUserId === currentUser.id) && (
+                            <button
+                              onClick={() => handleCancelDeletion(s.id)}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xxs tracking-wider uppercase shadow transition-all duration-205 pointer-elements-auto focus:outline-none shrink-0 self-start sm:self-center"
+                            >
+                              Cancelar Exclusão
+                            </button>
+                          )}
+                        </div>
+                      )}
+
                       {/* Past Return Date - Notification Warning Banner */}
                       {isPastReturn && (
                         <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-between text-xs text-amber-900 animate-pulse">
@@ -666,12 +1106,134 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                             </div>
                             <div className="flex items-center space-x-2 font-medium">
                               <Truck className="h-4 w-4 text-blue-500 shrink-0" />
-                              <span className="truncate">Transporte: {getVehicleName(s.vehicleId)}</span>
+                              {s.returnVehicleId && s.returnVehicleId !== s.vehicleId ? (
+                                <span className="truncate">
+                                  Transporte — <span className="font-bold text-blue-600">Ida:</span> {getVehicleName(s.vehicleId)} | <span className="font-bold text-indigo-600">Volta:</span> {getVehicleName(s.returnVehicleId)}
+                                </span>
+                              ) : (
+                                <span className="truncate">Transporte: {getVehicleName(s.vehicleId)}</span>
+                              )}
+                            </div>
+                            <div className="flex items-center space-x-2 font-medium">
+                              <User className="h-4 w-4 text-blue-500 shrink-0" />
+                              {s.returnDriverId && s.returnDriverId !== s.driverId ? (
+                                <span className="truncate">
+                                  Motorista — <span className="font-bold text-blue-600">Ida:</span> {getDriverName(s.driverId || '')} | <span className="font-bold text-indigo-600">Volta:</span> {getDriverName(s.returnDriverId)}
+                                </span>
+                              ) : (
+                                <span className="truncate">Motorista: {getDriverName(s.driverId || '')}</span>
+                              )}
                             </div>
                             <div className="flex items-center space-x-2 font-medium col-span-1 md:col-span-2">
                               <Landmark className="h-4 w-4 text-blue-500 shrink-0" />
                               <span>Destino: {getHospitalName(s.hospitalId)}</span>
                             </div>
+                          </div>
+
+                          {(s.companionName || s.companionPhone1 || s.companionPhone2) && (
+                            <div className="p-3 bg-slate-50 border border-slate-150 rounded-xl space-y-1 text-xs mt-1">
+                              <span className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest">
+                                Acompanhante / Contatos
+                              </span>
+                              {s.companionName && (
+                                <p className="text-slate-800 font-semibold">
+                                  Nome: <span className="font-normal text-slate-600">{s.companionName}</span>
+                                </p>
+                              )}
+                              {(s.companionPhone1 || s.companionPhone2) && (
+                                <p className="text-slate-800 font-semibold">
+                                  Telefones: <span className="font-normal text-slate-600">
+                                    {[s.companionPhone1, s.companionPhone2].filter(Boolean).join(' | ')}
+                                  </span>
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Seção de Confirmação da Viagem (Um dia antes) */}
+                          <div className="p-3 bg-slate-50 border border-slate-150 rounded-xl space-y-2 mt-1.5 no-print">
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <span className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest">
+                                Confirmação da Viagem (Um dia antes)
+                              </span>
+                              
+                              {/* Badge do Status Atual */}
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                s.confirmationStatus === 'confirmado' ? 'bg-emerald-100 text-emerald-800 border border-emerald-250' :
+                                s.confirmationStatus === 'sem_contato' ? 'bg-amber-100 text-amber-800 border border-amber-250' :
+                                s.confirmationStatus === 'desistencia' ? 'bg-rose-100 text-rose-800 border border-rose-250' :
+                                'bg-slate-100 text-slate-800 border border-slate-200'
+                              }`}>
+                                {s.confirmationStatus === 'confirmado' ? '✓ Confirmado pelo Solicitante' :
+                                 s.confirmationStatus === 'sem_contato' ? '⚠ Não Confirmado: Sem Contato' :
+                                 s.confirmationStatus === 'desistencia' ? '✗ Não Confirmado: Desistiu' :
+                                 '⌛ Confirmação Pendente'}
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap gap-1.5 pt-1">
+                              <button
+                                onClick={() => handleUpdateConfirmation(s.id, 'confirmado')}
+                                className={`px-2.5 py-1 text-xxs font-bold rounded-lg border transition-all cursor-pointer focus:outline-none ${
+                                  s.confirmationStatus === 'confirmado'
+                                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm font-black'
+                                    : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
+                                }`}
+                              >
+                                Confirmado
+                              </button>
+                              
+                              <button
+                                onClick={() => handleUpdateConfirmation(s.id, 'sem_contato')}
+                                className={`px-2.5 py-1 text-xxs font-bold rounded-lg border transition-all cursor-pointer focus:outline-none ${
+                                  s.confirmationStatus === 'sem_contato'
+                                    ? 'bg-amber-600 text-white border-amber-600 shadow-sm font-black'
+                                    : 'bg-white text-amber-700 border-amber-200 hover:bg-amber-50'
+                                }`}
+                                title="Sem contato: Coordenador/motorista não conseguiu contato"
+                              >
+                                Não Confirmou (Sem Contato)
+                              </button>
+                              
+                              <button
+                                onClick={() => handleUpdateConfirmation(s.id, 'desistencia')}
+                                className={`px-2.5 py-1 text-xxs font-bold rounded-lg border transition-all cursor-pointer focus:outline-none ${
+                                  s.confirmationStatus === 'desistencia'
+                                    ? 'bg-rose-600 text-white border-rose-600 shadow-sm font-black'
+                                    : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-50'
+                                }`}
+                                title="Desistiu: O solicitante desistiu da viagem"
+                              >
+                                Não Confirmou (Desistiu)
+                              </button>
+
+                              {s.confirmationStatus && s.confirmationStatus !== 'pendente' && (
+                                <button
+                                  onClick={() => handleUpdateConfirmation(s.id, 'pendente')}
+                                  className="px-2.5 py-1 text-xxs font-bold rounded-lg border bg-white text-slate-500 border-slate-200 hover:bg-slate-100 cursor-pointer focus:outline-none"
+                                  title="Reverter para pendente"
+                                >
+                                  Reverter
+                                </button>
+                              )}
+                            </div>
+
+                            {s.confirmationUpdatedBy && (
+                              <p className="text-[10px] text-slate-500 font-medium pt-0.5">
+                                Registrado por: <span className="text-slate-700 font-bold">{s.confirmationUpdatedBy}</span>
+                                {s.confirmationUpdatedAt && ` em ${new Date(s.confirmationUpdatedAt).toLocaleString('pt-BR')}`}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Print-only confirmation indicator */}
+                          <div className="hidden print:block mt-2 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-900">
+                            <strong>Confirmação da Viagem:</strong> {
+                              s.confirmationStatus === 'confirmado' ? 'CONFIRMADA pelo solicitante' :
+                              s.confirmationStatus === 'sem_contato' ? 'NÃO CONFIRMADA (Sem contato com o solicitante)' :
+                              s.confirmationStatus === 'desistencia' ? 'NÃO CONFIRMADA (O solicitante desistiu da viagem)' :
+                              'CONFIRMAÇÃO PENDENTE'
+                            } {s.confirmationUpdatedBy ? `(Registrado por: ${s.confirmationUpdatedBy}${s.confirmationUpdatedAt ? ` em ${new Date(s.confirmationUpdatedAt).toLocaleDateString('pt-BR')}` : ''})` : ''}
                           </div>
                         </div>
 
@@ -698,11 +1260,34 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                                 <CornerDownLeft className="h-3.5 w-3.5 mr-1" />
                                 Concluir
                               </button>
+
+                              {isAdmin && (
+                                <button
+                                  onClick={() => handleDeleteSchedule(s.id)}
+                                  className="p-2 text-red-600 bg-red-50 border border-red-100 hover:bg-red-600 hover:text-white rounded-xl transition-all duration-205 focus:outline-none"
+                                  title="Excluir Agendamento"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              )}
                             </>
                           ) : (
-                            <span className="text-xxs font-semibold bg-slate-100 text-slate-500 border border-slate-200 px-2 py-1 rounded-lg flex items-center">
-                              <Eye className="h-3 w-3 mr-1" /> Somente Visualização
-                            </span>
+                            <>
+                              {!s.isDeletionPending && (
+                                <span className="text-xxs font-semibold bg-slate-100 text-slate-500 border border-slate-200 px-2 py-1 rounded-lg flex items-center">
+                                  <Eye className="h-3 w-3 mr-1" /> Somente Visualização
+                                </span>
+                              )}
+                              {s.isDeletionPending && isAdmin && (
+                                <button
+                                  onClick={() => handleCancelDeletion(s.id)}
+                                  className="flex items-center px-3 py-2 text-xs text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-xl hover:bg-emerald-600 hover:text-white transition-all font-semibold focus:outline-none"
+                                  title="Reativar e cancelar exclusão pendente"
+                                >
+                                  Reativar
+                                </button>
+                              )}
+                            </>
                           )}
                         </div>
 
@@ -880,10 +1465,17 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
 
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-150 text-xs space-y-2 text-slate-800">
                   <p><strong>Paciente:</strong> {s.patientName}</p>
+                  {s.companionName && <p><strong>Acompanhante:</strong> {s.companionName}</p>}
+                  {(s.companionPhone1 || s.companionPhone2) && (
+                    <p>
+                      <strong>Contatos:</strong> {[s.companionPhone1, s.companionPhone2].filter(Boolean).join(' | ')}
+                    </p>
+                  )}
                   <p><strong>Tipo:</strong> {s.requestType === 'Procedimento especializado recorrente' ? `${s.requestType} (${s.recurrentTypeDetails})` : s.requestType}</p>
                   <p><strong>Destino:</strong> {getHospitalName(s.hospitalId)}</p>
                   <p><strong>Período:</strong> {s.startDate.split('-').reverse().join('/')} até {s.endDate.split('-').reverse().join('/')}</p>
-                  <p><strong>Veículo:</strong> {getVehicleName(s.vehicleId)}</p>
+                  <p><strong>Veículo:</strong> {s.returnVehicleId && s.returnVehicleId !== s.vehicleId ? `Ida: ${getVehicleName(s.vehicleId)} | Volta: ${getVehicleName(s.returnVehicleId)}` : getVehicleName(s.vehicleId)}</p>
+                  <p><strong>Motorista:</strong> {s.returnDriverId && s.returnDriverId !== s.driverId ? `Ida: ${getDriverName(s.driverId || '')} | Volta: ${getDriverName(s.returnDriverId)}` : getDriverName(s.driverId || '')}</p>
                 </div>
 
                 {!isPastReturn && (
@@ -925,6 +1517,158 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
         );
       })()}
 
+      <ConfirmDialog
+        isOpen={confirmConfig.isOpen}
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        type={confirmConfig.type}
+        onConfirm={confirmConfig.onConfirm}
+        onCancel={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}
+      />
+    </div>
+  );
+}
+
+interface VehicleCalendarProps {
+  vehicle: Vehicle;
+  editingScheduleId: string | null;
+  getVehicleOccupancyOnDate: (vId: string, dateStr: string, excludeScheduleId?: string) => number;
+  startDate: string;
+  endDate: string;
+  onSelectDate?: (dateStr: string) => void;
+}
+
+function VehicleCalendar({ vehicle, editingScheduleId, getVehicleOccupancyOnDate, startDate, endDate, onSelectDate }: VehicleCalendarProps) {
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+
+  const year = currentMonth.getFullYear();
+  const month = currentMonth.getMonth();
+
+  const firstDayOfMonth = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const handlePrevMonth = () => {
+    setCurrentMonth(new Date(year, month - 1, 1));
+  };
+
+  const handleNextMonth = () => {
+    setCurrentMonth(new Date(year, month + 1, 1));
+  };
+
+  const monthNames = [
+    'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+  ];
+
+  const weekdays = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+
+  const days = [];
+  for (let i = 0; i < firstDayOfMonth; i++) {
+    days.push(null);
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    days.push(d);
+  }
+
+  return (
+    <div className="bg-white p-4 rounded-xl border border-slate-200 mt-2 shadow-sm">
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
+        <div>
+          <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+            Calendário de Vagas
+          </h4>
+          <p className="text-[10px] text-slate-500 font-medium">
+            {vehicle.brand} {vehicle.model} ({vehicle.plate})
+          </p>
+        </div>
+        <div className="flex items-center space-x-2">
+          <button
+            type="button"
+            onClick={handlePrevMonth}
+            className="p-1 hover:bg-slate-100 rounded text-slate-600 focus:outline-none text-xs transition-colors"
+          >
+            &larr;
+          </button>
+          <span className="text-xs font-bold text-slate-700 min-w-[100px] text-center">
+            {monthNames[month]} {year}
+          </span>
+          <button
+            type="button"
+            onClick={handleNextMonth}
+            className="p-1 hover:bg-slate-100 rounded text-slate-600 focus:outline-none text-xs transition-colors"
+          >
+            &rarr;
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-slate-400 mb-2">
+        {weekdays.map((w, idx) => (
+          <div key={idx} className="py-1">{w}</div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-7 gap-1">
+        {days.map((day, idx) => {
+          if (day === null) {
+            return <div key={idx} className="aspect-square"></div>;
+          }
+
+          const dayStr = String(day).padStart(2, '0');
+          const monthStr = String(month + 1).padStart(2, '0');
+          const dateStr = `${year}-${monthStr}-${dayStr}`;
+
+          const booked = getVehicleOccupancyOnDate(vehicle.id, dateStr, editingScheduleId);
+          const capacity = vehicle.maxPassengers;
+          const isFull = booked >= capacity;
+
+          const isSelectedStart = startDate === dateStr;
+          const isSelectedEnd = endDate === dateStr;
+          const isSelectedRange = startDate && endDate && dateStr >= startDate && dateStr <= endDate;
+
+          let bgClass = 'bg-slate-50 text-slate-800 hover:bg-slate-100 border-slate-150';
+          if (isFull) {
+            bgClass = 'bg-red-50 text-red-500 line-through border-red-200 opacity-60 cursor-not-allowed';
+          } else if (isSelectedStart || isSelectedEnd) {
+            bgClass = 'bg-blue-600 text-white font-bold border-blue-600 hover:bg-blue-700 shadow-sm';
+          } else if (isSelectedRange) {
+            bgClass = 'bg-blue-50 text-blue-800 border-blue-200';
+          }
+
+          const hoverTitle = isFull
+            ? `Indisponibilidade: Veículo ${vehicle.model} cheio nesta data (${booked}/${capacity} vagas ocupadas)`
+            : `Data: ${dayStr}/${monthStr}/${year}\nOcupação: ${booked}/${capacity} vagas ocupadas`;
+
+          return (
+            <button
+              key={idx}
+              type="button"
+              disabled={isFull}
+              onClick={() => onSelectDate?.(dateStr)}
+              className={`aspect-square flex flex-col items-center justify-center text-xs rounded-lg border transition-all select-none focus:outline-none relative ${bgClass}`}
+              title={hoverTitle}
+            >
+              <span className="font-semibold">{day}</span>
+              {!isFull && (
+                <span className={`text-[8px] mt-0.5 font-bold ${
+                  isSelectedStart || isSelectedEnd 
+                    ? 'text-blue-100' 
+                    : booked > 0 
+                      ? 'text-amber-600' 
+                      : 'text-slate-400'
+                }`}>
+                  {booked}/{capacity}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex items-center justify-between text-[9px] text-slate-400 mt-3 pt-2 border-t border-slate-100">
+        <span className="flex items-center"><span className="w-2 h-2 rounded bg-blue-600 mr-1"></span>Selecionado</span>
+        <span className="flex items-center"><span className="w-2 h-2 rounded bg-red-50 border border-red-200 line-through mr-1"></span>Cheio</span>
+        <span className="flex items-center"><span className="w-2 h-2 rounded bg-white border border-slate-200 mr-1 font-bold">X/Y</span>Vagas</span>
+      </div>
     </div>
   );
 }
