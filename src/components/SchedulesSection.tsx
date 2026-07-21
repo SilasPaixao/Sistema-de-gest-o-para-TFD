@@ -29,6 +29,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
   const [patientName, setPatientName] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [tripType, setTripType] = useState<'ida_e_volta' | 'apenas_ida' | 'apenas_retorno'>('ida_e_volta');
   const [vehicleId, setVehicleId] = useState('');
   const [returnVehicleId, setReturnVehicleId] = useState('');
   const [driverId, setDriverId] = useState('');
@@ -68,7 +69,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
     onConfirm: () => {},
   });
 
-  const isUserOnly = currentUser.profile === 'Usuário comum';
+  const isUserOnly = currentUser.profile === 'Motorista';
 
   const handlePrint = () => {
     // Check if running inside an iframe (like AI Studio preview sandboxed frame)
@@ -158,6 +159,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
     setPatientName('');
     setStartDate('');
     setEndDate('');
+    setTripType('ida_e_volta');
     setVehicleId('');
     setReturnVehicleId('');
     setDriverId('');
@@ -180,7 +182,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
     setError(null);
     setSuccess(null);
 
-    if (!patientName.trim() || !startDate || !endDate || !vehicleId || !selectedHospitalId || !requestType) {
+    if (!patientName.trim() || !startDate || !vehicleId || !selectedHospitalId || !requestType) {
       setError('Por favor, preencha todos os campos obrigatórios do agendamento.');
       return;
     }
@@ -189,11 +191,12 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
       const payload = {
         patientName: patientName.trim(),
         startDate,
-        endDate,
+        endDate: startDate,
+        tripType,
         vehicleId,
         returnVehicleId: useDifferentReturnVehicle && returnVehicleId ? returnVehicleId : undefined,
         driverId: driverId || undefined,
-        returnDriverId: returnDriverId || undefined,
+        returnDriverId: driverId || undefined,
         hospitalId: selectedHospitalId,
         requestType,
         recurrentTypeDetails: requestType === 'Procedimento especializado recorrente' ? recurrentTypeDetails : undefined,
@@ -234,9 +237,10 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
     setPatientName(s.patientName);
     setStartDate(s.startDate);
     setEndDate(s.endDate);
+    setTripType(s.tripType || (s.startDate === s.endDate ? 'ida_e_volta' : 'ida_e_volta'));
     setVehicleId(s.vehicleId);
-    setDriverId(s.driverId || '');
-    setReturnDriverId(s.returnDriverId || '');
+    setDriverId(s.driverId || s.returnDriverId || '');
+    setReturnDriverId(s.driverId || s.returnDriverId || '');
     if (s.returnVehicleId && s.returnVehicleId !== s.vehicleId) {
       setReturnVehicleId(s.returnVehicleId);
       setUseDifferentReturnVehicle(true);
@@ -265,28 +269,35 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
     }, 100);
   };
 
-  // Baixa (Concluir Viagem)
-  const handleConclude = async (id: string) => {
-    try {
-      setError(null);
-      setSuccess(null);
-      const response = await fetch(`/api/schedules/${id}/conclude`, {
-        method: 'POST',
-        headers: {
-          'x-user-id': currentUser.token || currentUser.id
+  // Excluir Registro do Histórico (Apenas administradores)
+  const handleDeleteHistory = async (id: string) => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Excluir Registro do Histórico',
+      message: 'Tem certeza de que deseja EXCLUIR permanentemente este registro de viagem do histórico? Esta ação é irreversível.',
+      type: 'danger',
+      onConfirm: async () => {
+        setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+        setError(null);
+        setSuccess(null);
+        try {
+          const response = await fetch(`/api/schedules/history/${id}`, {
+            method: 'DELETE',
+            headers: {
+              'x-user-id': currentUser.token || currentUser.id
+            }
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Erro ao excluir registro do histórico');
+          }
+          setSuccess('Registro excluído do histórico com sucesso!');
+          fetchData();
+        } catch (err: any) {
+          setError(err.message);
         }
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Erro ao concluir viagem');
       }
-      setSuccess('Viagem arquivada e registrada no histórico da auditoria!');
-      setConcludingScheduleId(null);
-      fetchData();
-    } catch (err: any) {
-      setError(err.message);
-      setConcludingScheduleId(null);
-    }
+    });
   };
 
   const handleDeleteSchedule = async (id: string) => {
@@ -570,15 +581,109 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
 
                 {/* 1. Vehicle and Driver Selection FIRST */}
                 <div className="space-y-4 border-l-2 border-blue-500 pl-4 py-1">
+
+                  {/* Tipo de Viagem & Data da Viagem */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-150 space-y-4">
+                    <div>
+                      <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
+                        Tipo de Viagem
+                      </span>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <label className={`flex flex-col p-3 border rounded-xl cursor-pointer transition-all ${tripType === 'ida_e_volta' ? 'border-blue-500 bg-blue-50/50 ring-2 ring-blue-500/20' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="radio"
+                              name="trip-type"
+                              value="ida_e_volta"
+                              checked={tripType === 'ida_e_volta'}
+                              onChange={() => {
+                                setTripType('ida_e_volta');
+                                setReturnVehicleId('');
+                                setUseDifferentReturnVehicle(false);
+                              }}
+                              className="text-blue-600 focus:ring-blue-500 h-4 w-4"
+                            />
+                            <span className="text-xs font-bold text-slate-900">Ida e Volta</span>
+                          </div>
+                          <span className="text-[10px] text-slate-500 mt-1">Ida e volta no mesmo dia</span>
+                        </label>
+
+                        <label className={`flex flex-col p-3 border rounded-xl cursor-pointer transition-all ${tripType === 'apenas_ida' ? 'border-blue-500 bg-blue-50/50 ring-2 ring-blue-500/20' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="radio"
+                              name="trip-type"
+                              value="apenas_ida"
+                              checked={tripType === 'apenas_ida'}
+                              onChange={() => {
+                                setTripType('apenas_ida');
+                                setReturnVehicleId('');
+                                setUseDifferentReturnVehicle(false);
+                              }}
+                              className="text-blue-600 focus:ring-blue-500 h-4 w-4"
+                            />
+                            <span className="text-xs font-bold text-slate-900">Apenas Ida</span>
+                          </div>
+                          <span className="text-[10px] text-slate-500 mt-1">Viagem só de ida</span>
+                        </label>
+
+                        <label className={`flex flex-col p-3 border rounded-xl cursor-pointer transition-all ${tripType === 'apenas_retorno' ? 'border-blue-500 bg-blue-50/50 ring-2 ring-blue-500/20' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="radio"
+                              name="trip-type"
+                              value="apenas_retorno"
+                              checked={tripType === 'apenas_retorno'}
+                              onChange={() => {
+                                setTripType('apenas_retorno');
+                                setReturnVehicleId('');
+                                setUseDifferentReturnVehicle(false);
+                              }}
+                              className="text-blue-600 focus:ring-blue-500 h-4 w-4"
+                            />
+                            <span className="text-xs font-bold text-slate-900">Apenas Retorno</span>
+                          </div>
+                          <span className="text-[10px] text-slate-500 mt-1">Buscar no hospital (alta)</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label htmlFor="sched-travel-date" className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Data da Viagem
+                      </label>
+                      <input
+                        id="sched-travel-date"
+                        type="date"
+                        required
+                        value={startDate}
+                        onChange={(e) => {
+                          setStartDate(e.target.value);
+                          setEndDate(e.target.value);
+                        }}
+                        className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
+                      />
+                      {startDate && (
+                        <p className="text-[10px] font-bold text-blue-600 mt-1.5 flex items-center space-x-1">
+                          <span>Data selecionada:</span>
+                          <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                            {startDate.split('-').reverse().join('/')}
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                  </div>
                   
                   {/* Ida Section */}
                   <div className="space-y-3 bg-slate-50/60 p-4 rounded-2xl border border-slate-150">
-                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block">Ida (Partida)</span>
+                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block">
+                      {tripType === 'apenas_retorno' ? 'Retorno (Buscar no Hospital/Alta)' : tripType === 'apenas_ida' ? 'Viagem de Ida' : 'Ida (Partida)'}
+                    </span>
                     
-                    {/* Veículo de Ida */}
+                    {/* Veículo */}
                     <div>
                       <label htmlFor="sched-vehicle" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
-                        <span>Veículo de Ida</span>
+                        <span>{tripType === 'apenas_retorno' ? 'Veículo de Retorno' : 'Veículo'}</span>
                         {vehicleId && startDate && (() => {
                           const v = vehicles.find(x => x.id === vehicleId);
                           if (!v) return null;
@@ -586,7 +691,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                           const isFull = count >= v.maxPassengers;
                           return (
                             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isFull ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
-                              Ocupação Ida: {count}/{v.maxPassengers} {isFull ? '(LOTADO)' : '(Vagas disponíveis)'}
+                              Ocupação: {count}/{v.maxPassengers} {isFull ? '(LOTADO)' : '(Vagas disponíveis)'}
                             </span>
                           );
                         })()}
@@ -600,7 +705,9 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                         }}
                         className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
                       >
-                        <option value="">Selecione o veículo para ida...</option>
+                        <option value="">
+                          {tripType === 'apenas_retorno' ? 'Selecione o veículo para o retorno...' : 'Selecione o veículo...'}
+                        </option>
                         {vehicles.map((v) => (
                           <option key={v.id} value={v.id}>
                             {v.brand} {v.model} ({v.plate}) — Cap: {v.maxPassengers} passageiros
@@ -609,10 +716,10 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                       </select>
                     </div>
 
-                    {/* Motorista de Ida */}
+                    {/* Motorista */}
                     <div>
                       <label htmlFor="sched-driver" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                        Motorista de Ida
+                        {tripType === 'apenas_retorno' ? 'Motorista de Retorno' : 'Motorista'}
                       </label>
                       <select
                         id="sched-driver"
@@ -620,7 +727,9 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                         onChange={(e) => setDriverId(e.target.value)}
                         className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
                       >
-                        <option value="">Selecione o motorista para ida...</option>
+                        <option value="">
+                          {tripType === 'apenas_retorno' ? 'Selecione o motorista para o retorno...' : 'Selecione o motorista...'}
+                        </option>
                         {drivers.map((d) => (
                           <option key={d.id} value={d.id}>
                             {d.fullName} (CNH: {d.cnhType})
@@ -631,122 +740,65 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                   </div>
 
                   {/* Volta options & Customizers */}
-                  <div className="space-y-3 bg-slate-50/60 p-4 rounded-2xl border border-slate-150">
-                    <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block">Volta (Retorno)</span>
-                    
-                    {/* Use Different Return Vehicle Toggle */}
-                    <div className="flex items-center space-x-2 py-1">
-                      <input
-                        type="checkbox"
-                        id="use-different-return-vehicle"
-                        checked={useDifferentReturnVehicle}
-                        onChange={(e) => {
-                          setUseDifferentReturnVehicle(e.target.checked);
-                          if (!e.target.checked) {
-                            setReturnVehicleId('');
-                          }
-                        }}
-                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
-                      />
-                      <label htmlFor="use-different-return-vehicle" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
-                        Utilizar veículo diferente na Volta
-                      </label>
-                    </div>
-
-                    {useDifferentReturnVehicle && (
-                      <div>
-                        <label htmlFor="sched-return-vehicle" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
-                          <span>Veículo de Volta</span>
-                          {returnVehicleId && endDate && (() => {
-                            const v = vehicles.find(x => x.id === returnVehicleId);
-                            if (!v) return null;
-                            const count = getVehicleOccupancyOnDate(v.id, endDate, editingScheduleId);
-                            const isFull = count >= v.maxPassengers;
-                            return (
-                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isFull ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
-                                Ocupação Volta: {count}/{v.maxPassengers} {isFull ? '(LOTADO)' : '(Vagas disponíveis)'}
-                              </span>
-                            );
-                          })()}
+                  {tripType === 'ida_e_volta' && (
+                    <div className="space-y-3 bg-slate-50/60 p-4 rounded-2xl border border-slate-150">
+                      <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block">Volta (Retorno)</span>
+                      
+                      {/* Use Different Return Vehicle Toggle */}
+                      <div className="flex items-center space-x-2 py-1">
+                        <input
+                          type="checkbox"
+                          id="use-different-return-vehicle"
+                          checked={useDifferentReturnVehicle}
+                          onChange={(e) => {
+                            setUseDifferentReturnVehicle(e.target.checked);
+                            if (!e.target.checked) {
+                              setReturnVehicleId('');
+                            }
+                          }}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                        />
+                        <label htmlFor="use-different-return-vehicle" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
+                          Utilizar veículo diferente na Volta
                         </label>
-                        <select
-                          id="sched-return-vehicle"
-                          required={useDifferentReturnVehicle}
-                          value={returnVehicleId}
-                          onChange={(e) => setReturnVehicleId(e.target.value)}
-                          className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
-                        >
-                          <option value="">Selecione o veículo para volta...</option>
-                          {vehicles.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.brand} {v.model} ({v.plate}) — Cap: {v.maxPassengers} passageiros
-                            </option>
-                          ))}
-                        </select>
                       </div>
-                    )}
 
-                    {/* Motorista de Volta */}
-                    <div>
-                      <label htmlFor="sched-return-driver" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                        Motorista de Volta
-                      </label>
-                      <select
-                        id="sched-return-driver"
-                        value={returnDriverId}
-                        onChange={(e) => setReturnDriverId(e.target.value)}
-                        className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
-                      >
-                        <option value="">Selecione o motorista para volta...</option>
-                        {drivers.map((d) => (
-                          <option key={d.id} value={d.id}>
-                            {d.fullName} (CNH: {d.cnhType})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Date summary display inputs */}
-                  <div className="grid grid-cols-2 gap-3 bg-blue-50/20 p-4 rounded-2xl border border-blue-100/40">
-                    <div>
-                      <label htmlFor="sched-start" className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                        Data de Ida
-                      </label>
-                      <input
-                        id="sched-start"
-                        type="date"
-                        required
-                        value={startDate}
-                        onChange={(e) => setStartDate(e.target.value)}
-                        className="block w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-medium"
-                      />
-                      {startDate && (
-                        <p className="text-[10px] font-bold text-blue-600 mt-1">
-                          Selecionado: {startDate.split('-').reverse().join('/')}
-                        </p>
+                      {useDifferentReturnVehicle && (
+                        <div>
+                          <label htmlFor="sched-return-vehicle" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
+                            <span>Veículo de Volta</span>
+                            {returnVehicleId && endDate && (() => {
+                              const v = vehicles.find(x => x.id === returnVehicleId);
+                              if (!v) return null;
+                              const count = getVehicleOccupancyOnDate(v.id, endDate, editingScheduleId);
+                              const isFull = count >= v.maxPassengers;
+                              return (
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isFull ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                  Ocupação Volta: {count}/{v.maxPassengers} {isFull ? '(LOTADO)' : '(Vagas disponíveis)'}
+                                </span>
+                              );
+                            })()}
+                          </label>
+                          <select
+                            id="sched-return-vehicle"
+                            required={useDifferentReturnVehicle}
+                            value={returnVehicleId}
+                            onChange={(e) => setReturnVehicleId(e.target.value)}
+                            className="block w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
+                          >
+                            <option value="">Selecione o veículo para volta...</option>
+                            {vehicles.map((v) => (
+                              <option key={v.id} value={v.id}>
+                                {v.brand} {v.model} ({v.plate}) — Cap: {v.maxPassengers} passageiros
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                       )}
-                    </div>
 
-                    <div>
-                      <label htmlFor="sched-end" className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                        Data de Volta
-                      </label>
-                      <input
-                        id="sched-end"
-                        type="date"
-                        required
-                        value={endDate}
-                        onChange={(e) => setEndDate(e.target.value)}
-                        className="block w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs font-medium"
-                      />
-                      {endDate && (
-                        <p className="text-[10px] font-bold text-indigo-600 mt-1">
-                          Selecionado: {endDate.split('-').reverse().join('/')}
-                        </p>
-                      )}
+                      {/* Motorista de Volta is removed as it is always the same as the outbound driver */}
                     </div>
-                  </div>
+                  )}
 
                   {/* Calendars displaying dynamically below choices */}
                   <div className="space-y-4">
@@ -755,13 +807,13 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                       const v = vehicles.find(x => x.id === vehicleId);
                       if (!v) return (
                         <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-500">
-                          Selecione um <strong>veículo de ida</strong> acima para exibir o calendário de agendamento de ida.
+                          Selecione um <strong>{tripType === 'apenas_retorno' ? 'veículo de retorno' : 'veículo'}</strong> acima para exibir o calendário de vagas.
                         </div>
                       );
                       return (
                         <div className="space-y-1">
                           <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block">
-                            Selecione a Data de Ida no Calendário abaixo:
+                            {tripType === 'apenas_retorno' ? 'Selecione a Data de Retorno no Calendário abaixo:' : 'Selecione a Data de Ida no Calendário abaixo:'}
                           </span>
                           <VehicleCalendar
                             vehicle={v}
@@ -771,6 +823,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                             endDate={endDate}
                             onSelectDate={(date) => {
                               setStartDate(date);
+                              setEndDate(date);
                             }}
                           />
                         </div>
@@ -778,9 +831,8 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                     })()}
 
                     {/* Calendar Volta */}
-                    {(() => {
-                      const actualReturnVehId = useDifferentReturnVehicle ? returnVehicleId : vehicleId;
-                      const v = vehicles.find(x => x.id === actualReturnVehId);
+                    {tripType === 'ida_e_volta' && useDifferentReturnVehicle && (() => {
+                      const v = vehicles.find(x => x.id === returnVehicleId);
                       if (!v) return (
                         <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-500">
                           Selecione um <strong>veículo de volta</strong> acima para exibir o calendário de agendamento de volta.
@@ -789,7 +841,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                       return (
                         <div className="space-y-1">
                           <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block">
-                            Selecione a Data de Volta no Calendário abaixo:
+                            Selecione a Data no Calendário de Volta abaixo:
                           </span>
                           <VehicleCalendar
                             vehicle={v}
@@ -798,6 +850,7 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                             startDate={startDate}
                             endDate={endDate}
                             onSelectDate={(date) => {
+                              setStartDate(date);
                               setEndDate(date);
                             }}
                           />
@@ -1065,24 +1118,6 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                         </div>
                       )}
 
-                      {/* Past Return Date - Notification Warning Banner */}
-                      {isPastReturn && (
-                        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-between text-xs text-amber-900 animate-pulse">
-                          <div className="flex items-center space-x-2">
-                             <Clock className="h-4 w-4 text-amber-600" />
-                            <span className="font-bold">Retorno já alcançado ({s.endDate.split('-').reverse().join('/')}). Favor realizar a baixa!</span>
-                          </div>
-                          {canEdit && (
-                            <button
-                              id={`baixa-btn-${s.id}`}
-                              onClick={() => setConcludingScheduleId(s.id)}
-                              className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-xxs tracking-wider uppercase shadow transition-all duration-200 pointer-elements-auto focus:outline-none"
-                            >
-                              Dar Baixa
-                            </button>
-                          )}
-                        </div>
-                      )}
 
                       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                         
@@ -1100,9 +1135,33 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                           </div>
 
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-6 text-xs text-slate-600">
-                            <div className="flex items-center space-x-2 font-medium">
+                            <div className="flex items-center space-x-2 font-medium flex-wrap gap-y-1">
                               <Calendar className="h-4 w-4 text-blue-500 shrink-0" />
-                              <span>De: <strong>{s.startDate.split('-').reverse().join('/')}</strong> Até: <strong>{s.endDate.split('-').reverse().join('/')}</strong></span>
+                              {s.startDate === s.endDate ? (
+                                <span>Data da Viagem: <strong>{s.startDate.split('-').reverse().join('/')}</strong></span>
+                              ) : (
+                                <span>De: <strong>{s.startDate.split('-').reverse().join('/')}</strong> Até: <strong>{s.endDate.split('-').reverse().join('/')}</strong></span>
+                              )}
+                              
+                              {(() => {
+                                const type = s.tripType || (s.startDate === s.endDate ? 'ida_e_volta' : 'legacy');
+                                if (type === 'ida_e_volta') return (
+                                  <span className="bg-blue-50 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-blue-100">
+                                    Ida e Volta
+                                  </span>
+                                );
+                                if (type === 'apenas_ida') return (
+                                  <span className="bg-amber-50 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-amber-100">
+                                    Apenas Ida
+                                  </span>
+                                );
+                                if (type === 'apenas_retorno') return (
+                                  <span className="bg-purple-50 text-purple-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-purple-100">
+                                    Apenas Retorno
+                                  </span>
+                                );
+                                return null;
+                              })()}
                             </div>
                             <div className="flex items-center space-x-2 font-medium">
                               <Truck className="h-4 w-4 text-blue-500 shrink-0" />
@@ -1249,17 +1308,6 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                               >
                                 <Edit className="h-4 w-4" />
                               </button>
-                              
-                              {/* Standard manual low baja button (also if dates are not past due) */}
-                              <button
-                                id={`manual-baixa-btn-${s.id}`}
-                                onClick={() => setConcludingScheduleId(s.id)}
-                                className="flex items-center px-3 py-2 text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded-xl hover:bg-blue-600 hover:text-white transition-all font-semibold focus:outline-none"
-                                title="Concluir viagem e arquivar"
-                              >
-                                <CornerDownLeft className="h-3.5 w-3.5 mr-1" />
-                                Concluir
-                              </button>
 
                               {isAdmin && (
                                 <button
@@ -1319,7 +1367,18 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
                           <ShieldCheck className="h-3 w-3 mr-1 text-blue-600" />
                           Viagem Concluída & Auditada (Baixa Realizada)
                         </span>
-                        <span className="text-[10px] font-mono text-slate-400">ID: {h.id}</span>
+                        <div className="flex items-center space-x-2">
+                          <span className="text-[10px] font-mono text-slate-400">ID: {h.id}</span>
+                          {currentUser.profile === 'Administrador' && (
+                            <button
+                              onClick={() => handleDeleteHistory(h.id)}
+                              className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors focus:outline-none"
+                              title="Excluir Registro do Histórico (Discreto)"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                       
                       <h4 className="font-extrabold text-slate-800 text-base mb-2.5">{h.patientName}</h4>
@@ -1433,89 +1492,6 @@ export default function SchedulesSection({ currentUser, onOpenHospitals }: Sched
         </div>
       )}
 
-      {/* Custom Confirmation Modal for "Dar Baixa / Concluir" */}
-      {concludingScheduleId && (() => {
-        const s = schedules.find(item => item.id === concludingScheduleId);
-        if (!s) return null;
-        const isPastReturn = s.endDate <= todayStr;
-
-        return (
-          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm no-print animate-fadeIn">
-            <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 flex flex-col space-y-4 text-left">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center space-x-2">
-                  <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
-                    <CheckCircle className="h-5 w-5" />
-                  </div>
-                  <h3 className="font-bold text-slate-900 text-lg">Confirmar Baixa de Viagem</h3>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setConcludingScheduleId(null)}
-                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors focus:outline-none cursor-pointer"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              <div className="space-y-3">
-                <p className="text-xs text-slate-600 leading-relaxed">
-                  Você está prestes a concluir e arquivar esta viagem. O registro sairá da lista de agendamentos ativos e passará a integrar o histórico de viagens concluídas para fins de auditoria.
-                </p>
-
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-150 text-xs space-y-2 text-slate-800">
-                  <p><strong>Paciente:</strong> {s.patientName}</p>
-                  {s.companionName && <p><strong>Acompanhante:</strong> {s.companionName}</p>}
-                  {(s.companionPhone1 || s.companionPhone2) && (
-                    <p>
-                      <strong>Contatos:</strong> {[s.companionPhone1, s.companionPhone2].filter(Boolean).join(' | ')}
-                    </p>
-                  )}
-                  <p><strong>Tipo:</strong> {s.requestType === 'Procedimento especializado recorrente' ? `${s.requestType} (${s.recurrentTypeDetails})` : s.requestType}</p>
-                  <p><strong>Destino:</strong> {getHospitalName(s.hospitalId)}</p>
-                  <p><strong>Período:</strong> {s.startDate.split('-').reverse().join('/')} até {s.endDate.split('-').reverse().join('/')}</p>
-                  <p><strong>Veículo:</strong> {s.returnVehicleId && s.returnVehicleId !== s.vehicleId ? `Ida: ${getVehicleName(s.vehicleId)} | Volta: ${getVehicleName(s.returnVehicleId)}` : getVehicleName(s.vehicleId)}</p>
-                  <p><strong>Motorista:</strong> {s.returnDriverId && s.returnDriverId !== s.driverId ? `Ida: ${getDriverName(s.driverId || '')} | Volta: ${getDriverName(s.returnDriverId)}` : getDriverName(s.driverId || '')}</p>
-                </div>
-
-                {!isPastReturn && (
-                  <div className="p-3 bg-amber-50 border border-amber-250 text-amber-900 rounded-xl text-xs leading-relaxed flex items-start space-x-2">
-                    <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold block mb-0.5">Aviso de Baixa Antecipada</span>
-                      A data de retorno definida para esta viagem é <strong>{s.endDate.split('-').reverse().join('/')}</strong>, que ainda não foi alcançada.
-                      <p className="mt-1 font-semibold text-amber-850">Por regras operacionais do setor de TFD, a viagem só deve ser dada baixa e arquivada após o retorno efetivo do paciente.</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="pt-2 flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setConcludingScheduleId(null)}
-                  className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold transition-colors cursor-pointer text-center focus:outline-none"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleConclude(s.id)}
-                  disabled={!isPastReturn}
-                  className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold shadow-md transition-all text-center focus:outline-none ${
-                    isPastReturn 
-                      ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-100 hover:shadow-lg cursor-pointer' 
-                      : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed shadow-none'
-                  }`}
-                  title={!isPastReturn ? 'A baixa só é permitida após a data de retorno.' : 'Confirmar e arquivar viagem'}
-                >
-                  Confirmar Baixa
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
 
       <ConfirmDialog
         isOpen={confirmConfig.isOpen}

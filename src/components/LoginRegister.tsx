@@ -16,7 +16,7 @@ export default function LoginRegister({ onLoginSuccess }: LoginRegisterProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [profile, setProfile] = useState<UserProfile>('Usuário comum');
+  const [profile, setProfile] = useState<UserProfile>('Motorista');
   
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -60,7 +60,7 @@ export default function LoginRegister({ onLoginSuccess }: LoginRegisterProps) {
         setUsername('');
         setPassword('');
         setName('');
-        setProfile('Usuário comum');
+        setProfile('Motorista');
         setTimeout(() => {
           setIsLogin(true);
           setSuccess(null);
@@ -186,7 +186,7 @@ export default function LoginRegister({ onLoginSuccess }: LoginRegisterProps) {
                   onChange={(e) => setProfile(e.target.value as UserProfile)}
                   className="block w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white text-sm"
                 >
-                  <option value="Usuário comum">Usuário comum (Apenas Visualização)</option>
+                  <option value="Motorista">Motorista (Acesso ao Checklist de Veículo)</option>
                   <option value="Coordenador">Coordenador (Gestão de Agendamentos e Viagens)</option>
                   <option value="Administrador">Administrador (Controle Total do Sistema)</option>
                 </select>

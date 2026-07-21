@@ -8,7 +8,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import jwt from 'jsonwebtoken';
 import { DatabaseManager, getTodayString, DbUser } from './server/db.js';
-import { Vehicle, Driver, Hospital, Schedule, HistoryLog, UserProfile, RequestMedicalType } from './src/types.js';
+import { Vehicle, Driver, Hospital, Schedule, HistoryLog, UserProfile, RequestMedicalType, VehicleChecklist } from './src/types.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-tfd-super-secret-key-12345';
 
@@ -373,11 +373,30 @@ async function startServer() {
       for (const dateYMD in occupancy) {
         const dObj = new Date(dateYMD);
         if (dObj >= sStart && dObj <= sEnd) {
-          const isReturnDate = dateYMD === s.endDate;
-          const assignedVehicleId = isReturnDate ? (s.returnVehicleId || s.vehicleId) : s.vehicleId;
+          const tripType = s.tripType || (s.startDate === s.endDate ? 'ida_e_volta' : 'legacy');
           
-          if (assignedVehicleId === vehicleId) {
-            occupancy[dateYMD] += 1;
+          if (tripType === 'apenas_ida') {
+            if (s.vehicleId === vehicleId) {
+              occupancy[dateYMD] += 1;
+            }
+          } else if (tripType === 'apenas_retorno') {
+            const actualRetVeh = s.returnVehicleId || s.vehicleId;
+            if (actualRetVeh === vehicleId) {
+              occupancy[dateYMD] += 1;
+            }
+          } else if (tripType === 'ida_e_volta') {
+            if (s.vehicleId === vehicleId) {
+              occupancy[dateYMD] += 1;
+            } else if (s.returnVehicleId && s.returnVehicleId === vehicleId) {
+              occupancy[dateYMD] += 1;
+            }
+          } else {
+            const isReturnDate = dateYMD === s.endDate;
+            const assignedVehicleId = isReturnDate ? (s.returnVehicleId || s.vehicleId) : s.vehicleId;
+            
+            if (assignedVehicleId === vehicleId) {
+              occupancy[dateYMD] += 1;
+            }
           }
         }
       }
@@ -428,7 +447,41 @@ async function startServer() {
     });
   });
 
+  const autoArchiveExpiredSchedules = () => {
+    const schedules = DatabaseManager.getSchedules();
+    const todayStr = getTodayString();
+
+    for (const sched of [...schedules]) {
+      if (sched.endDate < todayStr && !sched.isDeletionPending) {
+        const vehicles = DatabaseManager.getVehicles();
+        const hospitals = DatabaseManager.getHospitals();
+        const vehicleObj = vehicles.find(v => v.id === sched.vehicleId);
+        const hospitalObj = hospitals.find(h => h.id === sched.hospitalId);
+
+        const vehicleDetails = vehicleObj ? `${vehicleObj.model} (${vehicleObj.plate})` : 'Veículo Desconhecido';
+        const hospitalName = hospitalObj ? hospitalObj.name : 'Hospital Desconhecido';
+
+        const historyItem: HistoryLog = {
+          id: 'history-auto-' + Math.random().toString(36).substr(2, 9),
+          patientName: sched.patientName,
+          startDate: sched.startDate,
+          endDate: sched.endDate,
+          vehicleDetails,
+          hospitalName,
+          requestType: sched.recurrentTypeDetails ? `${sched.requestType} (${sched.recurrentTypeDetails})` : sched.requestType,
+          createdByUserName: sched.createdByUserName,
+          completedAt: new Date().toISOString(),
+          completedByUserName: 'Sistema (Automático)'
+        };
+
+        DatabaseManager.saveHistory(historyItem);
+        DatabaseManager.deleteSchedule(sched.id);
+      }
+    }
+  };
+
   const checkPendingDeletions = () => {
+    autoArchiveExpiredSchedules();
     const schedules = DatabaseManager.getSchedules();
     const now = new Date().getTime();
     const oneDayMs = 24 * 60 * 60 * 1000;
@@ -485,6 +538,7 @@ async function startServer() {
     const user = getRequestUser(req);
     if (!user) return res.status(401).json({ error: 'Não autorizado' });
 
+    checkPendingDeletions();
     res.json(DatabaseManager.getHistory());
   });
 
@@ -492,7 +546,7 @@ async function startServer() {
     const user = getRequestUser(req);
     if (!user) return res.status(401).json({ error: 'Não autorizado' });
 
-    const { patientName, startDate, endDate, vehicleId, returnVehicleId, driverId, returnDriverId, hospitalId, requestType, recurrentTypeDetails, companionName, companionPhone1, companionPhone2 } = req.body;
+    const { patientName, startDate, endDate, tripType, vehicleId, returnVehicleId, driverId, returnDriverId, hospitalId, requestType, recurrentTypeDetails, companionName, companionPhone1, companionPhone2 } = req.body;
     
     if (!patientName || !startDate || !endDate || !vehicleId || !hospitalId || !requestType) {
       return res.status(400).json({ error: 'Todos os campos obrigatórios devem ser preenchidos' });
@@ -552,6 +606,7 @@ async function startServer() {
       patientName,
       startDate,
       endDate,
+      tripType: tripType || 'ida_e_volta',
       vehicleId,
       returnVehicleId: finalReturnVehicleId !== vehicleId ? finalReturnVehicleId : undefined,
       driverId: driverId || undefined,
@@ -587,7 +642,7 @@ async function startServer() {
       return res.status(403).json({ error: 'Permissão negada. Apenas quem criou este agendamento ou um Administrador pode alterá-lo.' });
     }
 
-    const { patientName, startDate, endDate, vehicleId, returnVehicleId, driverId, returnDriverId, hospitalId, requestType, recurrentTypeDetails, companionName, companionPhone1, companionPhone2 } = req.body;
+    const { patientName, startDate, endDate, tripType, vehicleId, returnVehicleId, driverId, returnDriverId, hospitalId, requestType, recurrentTypeDetails, companionName, companionPhone1, companionPhone2 } = req.body;
     
     if (!patientName || !startDate || !endDate || !vehicleId || !hospitalId || !requestType) {
       return res.status(400).json({ error: 'Todos os campos obrigatórios devem ser preenchidos' });
@@ -639,6 +694,7 @@ async function startServer() {
     existingSched.patientName = patientName;
     existingSched.startDate = startDate;
     existingSched.endDate = endDate;
+    existingSched.tripType = tripType || 'ida_e_volta';
     existingSched.vehicleId = vehicleId;
     existingSched.returnVehicleId = finalReturnVehicleId !== vehicleId ? finalReturnVehicleId : undefined;
     existingSched.driverId = driverId || undefined;
@@ -790,6 +846,86 @@ async function startServer() {
 
     DatabaseManager.deleteHospital(targetId);
     res.json({ message: 'Hospital excluído com sucesso.' });
+  });
+
+  // Vehicle Checklists API Endpoints
+  app.get('/api/checklists', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user) return res.status(401).json({ error: 'Não autorizado' });
+    res.json(DatabaseManager.getChecklists());
+  });
+
+  app.post('/api/checklists', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user) return res.status(401).json({ error: 'Não autorizado' });
+
+    const chk = req.body;
+    if (!chk.vehicleId || !chk.vehicleModelPlate || !chk.date || chk.initialKm === undefined || chk.finalKm === undefined) {
+      return res.status(400).json({ error: 'Dados obrigatórios do checklist ausentes' });
+    }
+
+    const newChecklist: VehicleChecklist = {
+      id: chk.id || 'checklist-' + Math.random().toString(36).substr(2, 9),
+      vehicleId: chk.vehicleId,
+      vehicleModelPlate: chk.vehicleModelPlate,
+      date: chk.date,
+      initialKm: Number(chk.initialKm),
+      finalKm: Number(chk.finalKm),
+      oleo: !!chk.oleo,
+      agua: !!chk.agua,
+      oxigenio: !!chk.oxigenio,
+      parabrisa: !!chk.parabrisa,
+      luzRe: !!chk.luzRe,
+      arCondicionado: !!chk.arCondicionado,
+      documento: !!chk.documento,
+      piscas: !!chk.piscas,
+      retrovisores: !!chk.retrovisores,
+      sirene: !!chk.sirene,
+      marcadorCombustivel: !!chk.marcadorCombustivel,
+      chaveRodas: !!chk.chaveRodas,
+      macaco: !!chk.macaco,
+      buzina: !!chk.buzina,
+      farois: !!chk.farois,
+      saidaHorario: chk.saidaHorario || '',
+      saidaDestino: chk.saidaDestino || '',
+      saidaCidade: chk.saidaCidade || '',
+      driverUserId: user.id,
+      driverUserName: user.name,
+      createdAt: new Date().toISOString()
+    };
+
+    DatabaseManager.saveChecklist(newChecklist);
+    res.status(201).json(newChecklist);
+  });
+
+  app.delete('/api/checklists/:id', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user || (user.profile !== 'Administrador' && user.profile !== 'Coordenador')) {
+      return res.status(403).json({ error: 'Apenas administradores e coordenadores podem excluir checklists.' });
+    }
+
+    const id = req.params.id;
+    DatabaseManager.deleteChecklist(id);
+    res.json({ message: 'Checklist excluído com sucesso.' });
+  });
+
+  // Delete History Log (Apenas administradores)
+  app.delete('/api/schedules/history/:id', (req, res) => {
+    const user = getRequestUser(req);
+    if (!user || user.profile !== 'Administrador') {
+      return res.status(403).json({ error: 'Apenas administradores podem excluir registros do histórico.' });
+    }
+
+    const targetId = req.params.id;
+    const history = DatabaseManager.getHistory();
+    const targetItem = history.find(h => h.id === targetId);
+
+    if (!targetItem) {
+      return res.status(404).json({ error: 'Registro de histórico não encontrado.' });
+    }
+
+    DatabaseManager.deleteHistory(targetId);
+    res.json({ message: 'Registro de histórico excluído com sucesso.' });
   });
 
   // 5. Delete Schedule (Apenas administradores)

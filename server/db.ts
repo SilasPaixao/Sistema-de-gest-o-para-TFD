@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import pg from 'pg';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { DbSchema, User, Vehicle, Driver, Hospital, Schedule, HistoryLog, SystemSettings } from '../src/types.js';
+import { DbSchema, User, Vehicle, Driver, Hospital, Schedule, HistoryLog, SystemSettings, VehicleChecklist } from '../src/types.js';
 
 const { Pool } = pg;
 
@@ -36,6 +36,7 @@ const defaultDb: {
   schedules: Schedule[];
   history: HistoryLog[];
   settings: SystemSettings;
+  checklists: VehicleChecklist[];
 } = {
   users: [
     {
@@ -56,7 +57,8 @@ const defaultDb: {
   settings: {
     backupFolder: 'backups',
     lastBackupDate: ''
-  }
+  },
+  checklists: []
 };
 
 // In-memory cache synced with either PostgreSQL or local json db
@@ -70,7 +72,8 @@ let dbState = {
   settings: {
     backupFolder: 'backups',
     lastBackupDate: ''
-  } as SystemSettings
+  } as SystemSettings,
+  checklists: [] as VehicleChecklist[]
 };
 
 let pool: pg.Pool | null = null;
@@ -236,6 +239,7 @@ export class DatabaseManager {
               ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS return_vehicle_id VARCHAR(255);
               ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS driver_id VARCHAR(255);
               ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS return_driver_id VARCHAR(255);
+              ALTER TABLE tfd_schedules ADD COLUMN IF NOT EXISTS trip_type VARCHAR(50) DEFAULT 'ida_e_volta';
             `);
             await dbPool.query(`
               CREATE TABLE IF NOT EXISTS tfd_history_logs (
@@ -255,6 +259,38 @@ export class DatabaseManager {
               CREATE TABLE IF NOT EXISTS tfd_settings (
                 key VARCHAR(50) PRIMARY KEY,
                 value TEXT NOT NULL
+              );
+            `);
+
+            await dbPool.query(`
+              CREATE TABLE IF NOT EXISTS tfd_checklists (
+                id VARCHAR(255) PRIMARY KEY,
+                vehicle_id VARCHAR(255) NOT NULL,
+                vehicle_model_plate VARCHAR(255) NOT NULL,
+                date VARCHAR(50) NOT NULL,
+                initial_km INTEGER NOT NULL,
+                final_km INTEGER NOT NULL,
+                oleo BOOLEAN NOT NULL,
+                agua BOOLEAN NOT NULL,
+                oxigenio BOOLEAN NOT NULL,
+                parabrisa BOOLEAN NOT NULL,
+                luz_re BOOLEAN NOT NULL,
+                ar_condicionado BOOLEAN NOT NULL,
+                documento BOOLEAN NOT NULL,
+                piscas BOOLEAN NOT NULL,
+                retrovisores BOOLEAN NOT NULL,
+                sirene BOOLEAN NOT NULL,
+                marcador_combustivel BOOLEAN NOT NULL,
+                chave_rodas BOOLEAN NOT NULL,
+                macaco BOOLEAN NOT NULL,
+                buzina BOOLEAN NOT NULL,
+                farois BOOLEAN NOT NULL,
+                saida_horario VARCHAR(50) NOT NULL,
+                saida_destino VARCHAR(255) NOT NULL,
+                saida_cidade VARCHAR(255) NOT NULL,
+                driver_user_id VARCHAR(255) NOT NULL,
+                driver_user_name VARCHAR(255) NOT NULL,
+                created_at VARCHAR(255) NOT NULL
               );
             `);
 
@@ -429,6 +465,7 @@ export class DatabaseManager {
                 patientName: r.patient_name,
                 startDate: r.start_date,
                 endDate: r.end_date,
+                tripType: r.trip_type || 'ida_e_volta',
                 vehicleId: r.vehicle_id,
                 returnVehicleId: r.return_vehicle_id || undefined,
                 driverId: r.driver_id || undefined,
@@ -479,7 +516,39 @@ export class DatabaseManager {
                 dbState.settings = defaultDb.settings;
               }
 
-              logger(`Loaded ${dbState.users.length} users, ${dbState.vehicles.length} vehicles, ${dbState.drivers.length} drivers, ${dbState.hospitals.length} hospitals, ${dbState.schedules.length} active travels, ${dbState.history.length} concluded history entries.`);
+              // Load checklists
+              const checklistsRows = (await dbPool.query('SELECT * FROM tfd_checklists')).rows;
+              dbState.checklists = checklistsRows.map(r => ({
+                id: r.id,
+                vehicleId: r.vehicle_id,
+                vehicleModelPlate: r.vehicle_model_plate,
+                date: r.date,
+                initialKm: r.initial_km,
+                finalKm: r.final_km,
+                oleo: r.oleo === true,
+                agua: r.agua === true,
+                oxigenio: r.oxigenio === true,
+                parabrisa: r.parabrisa === true,
+                luzRe: r.luz_re === true,
+                arCondicionado: r.ar_condicionado === true,
+                documento: r.documento === true,
+                piscas: r.piscas === true,
+                retrovisores: r.retrovisores === true,
+                sirene: r.sirene === true,
+                marcadorCombustivel: r.marcador_combustivel === true,
+                chaveRodas: r.chave_rodas === true,
+                macaco: r.macaco === true,
+                buzina: r.buzina === true,
+                farois: r.farois === true,
+                saidaHorario: r.saida_horario,
+                saidaDestino: r.saida_destino,
+                saidaCidade: r.saida_cidade,
+                driverUserId: r.driver_user_id,
+                driverUserName: r.driver_user_name,
+                createdAt: r.created_at
+              }));
+
+              logger(`Loaded ${dbState.users.length} users, ${dbState.vehicles.length} vehicles, ${dbState.drivers.length} drivers, ${dbState.hospitals.length} hospitals, ${dbState.schedules.length} active travels, ${dbState.history.length} concluded history entries, ${dbState.checklists.length} vehicle checklists.`);
             }
           } catch (pgError) {
             console.error('PostgreSQL initialization failed. Falling back to local JSON file db.', pgError);
@@ -518,6 +587,10 @@ export class DatabaseManager {
           data.users = [];
           updated = true;
         }
+        if (!data.checklists) {
+          data.checklists = [];
+          updated = true;
+        }
         
         const adminExists = data.users.some((u: DbUser) => u.username === 'admin');
         if (!adminExists) {
@@ -532,6 +605,7 @@ export class DatabaseManager {
         dbState.schedules = data.schedules || [];
         dbState.history = data.history || [];
         dbState.settings = data.settings;
+        dbState.checklists = data.checklists || [];
 
         if (updated) {
           fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
@@ -718,9 +792,9 @@ export class DatabaseManager {
           created_by_user_id, created_by_user_name, created_at, 
           is_deletion_pending, deletion_requested_at, deletion_requested_by_user_id, deletion_requested_by_user_name, deleted_by_admin_name,
           companion_name, companion_phone_1, companion_phone_2,
-          confirmation_status, confirmation_updated_by, confirmation_updated_at
+          confirmation_status, confirmation_updated_by, confirmation_updated_at, trip_type
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
          ON CONFLICT (id) DO UPDATE SET
            patient_name = EXCLUDED.patient_name,
            start_date = EXCLUDED.start_date,
@@ -742,7 +816,8 @@ export class DatabaseManager {
            deleted_by_admin_name = EXCLUDED.deleted_by_admin_name,
            companion_name = EXCLUDED.companion_name,
            companion_phone_1 = EXCLUDED.companion_phone_1, confirmation_status = EXCLUDED.confirmation_status, confirmation_updated_by = EXCLUDED.confirmation_updated_by, confirmation_updated_at = EXCLUDED.confirmation_updated_at,
-           companion_phone_2 = EXCLUDED.companion_phone_2`,
+           companion_phone_2 = EXCLUDED.companion_phone_2,
+            trip_type = EXCLUDED.trip_type`,
         [
           schedule.id,
           schedule.patientName,
@@ -768,7 +843,8 @@ export class DatabaseManager {
           schedule.companionPhone2 || null,
           schedule.confirmationStatus || 'pendente',
           schedule.confirmationUpdatedBy || null,
-          schedule.confirmationUpdatedAt || null
+          schedule.confirmationUpdatedAt || null,
+           schedule.tripType || 'ida_e_volta'
         ]
       ).catch(e => console.error('PostgreSQL saveSchedule failed:', e));
     } else {
@@ -866,6 +942,16 @@ export class DatabaseManager {
     }
   }
 
+  public static deleteHistory(id: string): void {
+    dbState.history = dbState.history.filter((h: HistoryLog) => h.id !== id);
+    if (pool) {
+      pool.query('DELETE FROM tfd_history_logs WHERE id = $1', [id])
+        .catch(e => console.error('PostgreSQL deleteHistory failed:', e));
+    } else {
+      this.syncToFile();
+    }
+  }
+
   public static getSettings(): SystemSettings {
     return dbState.settings;
   }
@@ -881,6 +967,81 @@ export class DatabaseManager {
            value = EXCLUDED.value`,
         ['settings', JSON.stringify(dbState.settings)]
       ).catch(e => console.error('PostgreSQL saveSettings failed:', e));
+    } else {
+      this.syncToFile();
+    }
+  }
+
+  public static getChecklists(): VehicleChecklist[] {
+    return dbState.checklists || [];
+  }
+
+  public static saveChecklist(chk: VehicleChecklist): void {
+    if (!dbState.checklists) dbState.checklists = [];
+    const idx = dbState.checklists.findIndex((x: any) => x.id === chk.id);
+    if (idx >= 0) {
+      dbState.checklists[idx] = chk;
+    } else {
+      dbState.checklists.push(chk);
+    }
+
+    if (pool) {
+      pool.query(
+        `INSERT INTO tfd_checklists (
+          id, vehicle_id, vehicle_model_plate, date, initial_km, final_km,
+          oleo, agua, oxigenio, parabrisa, luz_re, ar_condicionado, documento,
+          piscas, retrovisores, sirene, marcador_combustivel, chave_rodas, macaco,
+          buzina, farois, saida_horario, saida_destino, saida_cidade,
+          driver_user_id, driver_user_name, created_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+          $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+        ) ON CONFLICT (id) DO UPDATE SET
+          vehicle_id = EXCLUDED.vehicle_id,
+          vehicle_model_plate = EXCLUDED.vehicle_model_plate,
+          date = EXCLUDED.date,
+          initial_km = EXCLUDED.initial_km,
+          final_km = EXCLUDED.final_km,
+          oleo = EXCLUDED.oleo,
+          agua = EXCLUDED.agua,
+          oxigenio = EXCLUDED.oxigenio,
+          parabrisa = EXCLUDED.parabrisa,
+          luz_re = EXCLUDED.luz_re,
+          ar_condicionado = EXCLUDED.ar_condicionado,
+          documento = EXCLUDED.documento,
+          piscas = EXCLUDED.piscas,
+          retrovisores = EXCLUDED.retrovisores,
+          sirene = EXCLUDED.sirene,
+          marcador_combustivel = EXCLUDED.marcador_combustivel,
+          chave_rodas = EXCLUDED.chave_rodas,
+          macaco = EXCLUDED.macaco,
+          buzina = EXCLUDED.buzina,
+          farois = EXCLUDED.farois,
+          saida_horario = EXCLUDED.saida_horario,
+          saida_destino = EXCLUDED.saida_destino,
+          saida_cidade = EXCLUDED.saida_cidade,
+          driver_user_id = EXCLUDED.driver_user_id,
+          driver_user_name = EXCLUDED.driver_user_name,
+          created_at = EXCLUDED.created_at`,
+        [
+          chk.id, chk.vehicleId, chk.vehicleModelPlate, chk.date, chk.initialKm, chk.finalKm,
+          chk.oleo, chk.agua, chk.oxigenio, chk.parabrisa, chk.luzRe, chk.arCondicionado, chk.documento,
+          chk.piscas, chk.retrovisores, chk.sirene, chk.marcadorCombustivel, chk.chaveRodas, chk.macaco,
+          chk.buzina, chk.farois, chk.saidaHorario, chk.saidaDestino, chk.saidaCidade,
+          chk.driverUserId, chk.driverUserName, chk.createdAt
+        ]
+      ).catch(e => console.error('PostgreSQL saveChecklist failed:', e));
+    } else {
+      this.syncToFile();
+    }
+  }
+
+  public static deleteChecklist(id: string): void {
+    if (!dbState.checklists) dbState.checklists = [];
+    dbState.checklists = dbState.checklists.filter((x: any) => x.id !== id);
+    if (pool) {
+      pool.query('DELETE FROM tfd_checklists WHERE id = $1', [id])
+        .catch(e => console.error('PostgreSQL deleteChecklist failed:', e));
     } else {
       this.syncToFile();
     }

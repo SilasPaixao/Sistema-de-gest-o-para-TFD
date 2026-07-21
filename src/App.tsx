@@ -13,6 +13,7 @@ import DriversSection from './components/DriversSection.js';
 import HospitalsSection from './components/HospitalsSection.js';
 import SchedulesSection from './components/SchedulesSection.js';
 import BackupSection from './components/BackupSection.js';
+import DriverChecklistSection from './components/DriverChecklistSection.js';
 import { User as UserType } from './types.js';
 
 type TabType = 'schedules' | 'vehicles' | 'drivers' | 'hospitals' | 'users' | 'backups';
@@ -98,6 +99,10 @@ export default function App() {
   // Not logged in -> Show Login/Register forms
   if (!currentUser) {
     return <LoginRegister onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  if (currentUser.profile === 'Motorista') {
+    return <DriverChecklistSection currentUser={currentUser} onLogout={handleLogout} />;
   }
 
   const isAdmin = currentUser.profile === 'Administrador';

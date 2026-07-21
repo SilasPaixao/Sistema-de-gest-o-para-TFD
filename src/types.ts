@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type UserProfile = 'Administrador' | 'Coordenador' | 'Usuário comum';
+export type UserProfile = 'Administrador' | 'Coordenador' | 'Motorista';
 export type UserStatus = 'pendente' | 'aprovado' | 'rejeitado';
 
 export interface User {
@@ -50,6 +50,7 @@ export interface Schedule {
   patientName: string;
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD
+  tripType?: 'ida_e_volta' | 'apenas_ida' | 'apenas_retorno';
   vehicleId: string;
   returnVehicleId?: string;
   driverId?: string;
@@ -91,6 +92,36 @@ export interface SystemSettings {
   lastBackupDate: string; // YYYY-MM-DD of the last performed backup
 }
 
+export interface VehicleChecklist {
+  id: string;
+  vehicleId: string;
+  vehicleModelPlate: string;
+  date: string;
+  initialKm: number;
+  finalKm: number;
+  oleo: boolean;
+  agua: boolean;
+  oxigenio: boolean;
+  parabrisa: boolean;
+  luzRe: boolean;
+  arCondicionado: boolean;
+  documento: boolean;
+  piscas: boolean;
+  retrovisores: boolean;
+  sirene: boolean;
+  marcadorCombustivel: boolean;
+  chaveRodas: boolean;
+  macaco: boolean;
+  buzina: boolean;
+  farois: boolean;
+  saidaHorario: string;
+  saidaDestino: string;
+  saidaCidade: string;
+  driverUserId: string;
+  driverUserName: string;
+  createdAt: string;
+}
+
 export interface DbSchema {
   users: User[];
   vehicles: Vehicle[];
@@ -99,4 +130,5 @@ export interface DbSchema {
   schedules: Schedule[];
   history: HistoryLog[];
   settings: SystemSettings;
+  checklists?: VehicleChecklist[];
 }
